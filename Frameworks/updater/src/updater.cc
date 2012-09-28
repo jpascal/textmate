@@ -587,6 +587,22 @@ namespace bundles_db
 		return false;
 	}
 
+	std::string changes_as_json (std::string const& installDir)
+	{
+		std::string res = "{\"bundles\":[";
+		for(auto bundle : bundle_t::local_bundles(installDir))
+		{
+			std::string changes = path::join(bundle->path(), "Changes.json");
+			if(path::exists(changes))
+			{
+				res += path::content(changes);
+				res += ",";
+			}
+		}
+		res += "]}";
+		return res;
+	}
+
 	// ===========================
 	// = Bundle Dependency Logic =
 	// ===========================
