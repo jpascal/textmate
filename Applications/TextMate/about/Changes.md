@@ -1,5 +1,46 @@
 # Changes
 
+## 2012-11-12 (r9321)
+
+* Add `filepanel` dialog command. For details use ⌃R (execute current line) on a line containing: `"$DIALOG" help filepanel`. *[Hans-Jörg Bibiko]*
+
+* The contributions page in the About window now list the commits from contributors. *[Brad Choate]*
+
+* When the file browser is showing a lot of items, delays can happen when opening, closing, saving, or changing a file (when it goes from unmodified to modified) so as a temporary workaround you can now disable the file browser status by adding the following to `.tm_properties`:
+
+		fileBrowserDocumentStatus = false
+
+	Long-term the goal is of course to improve the slow file browser refreshing. *[Josh Goebel]*
+
+* Command input and the `TM_SELECTED_TEXT` variable now work correctly with column selections.
+
+* If no theme is selected, the gutter now get a default set of colors. *[Robert Hencke]*
+
+* The command properties drawer in the bundle editor has been made less wide by wrapping a few lines. *[Adam Strzelecki]*
+
+## 2012-10-01 (r9319)
+
+* Using “Transpose” (⌃T) with a discontinuous selection will now swap the selected strings. If pressed repeatedly, and more than two strings are selected, it will cycle through all possible permutations.
+
+* The scope now contains `dyn.selection` and/or `dyn.caret.*` based on the following rules:
+
+	- If there is one or more selections: `dyn.selection`.
+	- If there is a single zero-width selection: `dyn.caret.mixed.columnar`.
+	- If there are multiple carets and/or selections: `dyn.caret.mixed`.
+	- When there is only a single caret or a single continuous selection the left scope may contain: `dyn.caret.begin.line` or `dyn.caret.begin.document`.
+	- Likewise the right scope may contain: `dyn.caret.end.line` or `dyn.caret.end.document`.
+
+* When expanding tab triggers, the left scope is the scope to the left of the start of the potential tab trigger and the right scope is likewise that to the right of the potential tab trigger.
+
+* `rmate`: Overwriting an existing file now preserve the existing file’s group and owner.
+
+## 2012-09-29 (r9317)
+
+* New semantic class: `callback.document.will-save`. This can be used to have a command called prior to saving a document, the command could e.g. strip trailing whitespace or ensure the document has a `LF` character on last line. Two minor issues is that selection is currently lost after running a “did save” command (when it replaces entire document) and caret is scrolled into the visible area.
+* The about window has been combined with credits, release notes, and a new option allows you to see changes for installed bundles, although presently not much is showing, as you’ll need updated bundles before version information is available (so a lot of info should show in a few days when the various bundles have auto-updated). *[Rasmus Abrahamsen]*
+* If the file browser was showing a lot of items, editor speed would be affected. There still is an issue opening/closing files or when a document goes from modified to non-modified or vice versa.
+* Fix issues with lack of resizing the gutter.
+
 ## 2012-09-24 (r9315)
 
 * Files which use CRLF no longer cause problems for Find in Folder. *[Rasmus Abrahamsen]*
