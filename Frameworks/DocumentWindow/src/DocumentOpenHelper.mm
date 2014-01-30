@@ -1,6 +1,9 @@
 #import "DocumentOpenHelper.h"
 #import "EncodingView.h"
+#import "FileTypeDialog.h"
+#import <OakAppKit/OakAppKit.h>
 #import <OakFoundation/NSString Additions.h>
+#import <encoding/encoding.h>
 #import <ns/ns.h>
 #import <text/parse.h>
 #import <oak/debug.h>
@@ -8,23 +11,17 @@
 OAK_DEBUG_VAR(DocumentController_OpenHelper);
 
 @interface DocumentOpenHelper ()
+@property (nonatomic, copy) void(^callback)(std::string const&, oak::uuid_t const&);
+
 - (void)didOpenDocument:(document::document_ptr const&)aDocument;
 - (void)failedToOpenDocument:(document::document_ptr const&)aDocument error:(std::string const&)aMessage usingFilter:(oak::uuid_t const&)filterUUID;
 @end
 
 namespace
 {
-	struct info_t
-	{
-		info_t (EncodingViewController* controller, file::open_context_ptr context) : controller(controller), context(context) { }
-
-		EncodingViewController* controller;
-		file::open_context_ptr context;
-	};
-
 	struct open_callback_t : document::open_callback_t
 	{
-		open_callback_t (DocumentOpenHelper* self, NSWindow* window) : _self(self), _window(window)
+		open_callback_t (document::document_ptr const& document, DocumentOpenHelper* self, NSWindow* window) : _document(document), _self(self), _window(window)
 		{
 			ASSERT(_window);
 		}
@@ -33,11 +30,31 @@ namespace
 		{
 			[_window.attachedSheet orderOut:_self];
 
-			NSAlert* alert = [[NSAlert alertWithMessageText:@"Unknown Encoding" defaultButton:@"Continue" alternateButton:@"Cancel" otherButton:nil informativeTextWithFormat:@"This file is not UTF-8 nor does it have any encoding information stored."] retain];
-			EncodingViewController* controller = [[EncodingViewController alloc] initWithFirst:content->begin() last:content->end()];
-			[alert setAccessoryView:controller.view];
-			[alert beginSheetModalForWindow:_window modalDelegate:_self didEndSelector:@selector(selectEncodingSheetDidEnd:returnCode:contextInfo:) contextInfo:new info_t(controller, context)];
-			[[alert window] recalculateKeyViewLoop];
+			EncodingWindowController* controller = [[EncodingWindowController alloc] initWithFirst:content->begin() last:content->end()];
+			controller.displayName = [NSString stringWithCxxString:_document->display_name()];
+
+			__block encoding::classifier_t db;
+			static std::string const kEncodingFrequenciesPath = path::join(path::home(), "Library/Caches/com.macromates.TextMate/EncodingFrequencies.binary");
+			db.load(kEncodingFrequenciesPath);
+
+			std::multimap<double, std::string> probabilities;
+			for(auto const& charset : db.charsets())
+				probabilities.emplace(1 - db.probability(content->begin(), content->end(), charset), charset);
+			if(!probabilities.empty() && probabilities.begin()->first < 1)
+				controller.encoding = [NSString stringWithCxxString:probabilities.begin()->second];
+
+			[controller.window layoutIfNeeded];
+			OakShowSheetForWindow(controller.window, _window, ^(NSInteger returnCode){
+				if(returnCode != NSRunAbortedResponse)
+				{
+					context->set_charset(to_s(controller.encoding));
+					if(controller.trainClassifier)
+					{
+						db.learn(content->begin(), content->end(), to_s(controller.encoding));
+						db.save(kEncodingFrequenciesPath);
+					}
+				}
+			});
 		}
 
 		void select_file_type (std::string const& path, io::bytes_ptr content, file::open_context_ptr context)
@@ -51,12 +68,21 @@ namespace
 				[_window.attachedSheet orderOut:_self];
 
 				FileTypeDialog* controller = [[FileTypeDialog alloc] initWithPath:[NSString stringWithCxxString:path] first:(content ? content->begin() : NULL) last:(content ? content->end() : NULL)];
-				[controller beginSheetModalForWindow:_window modalDelegate:_self contextInfo:new info_t(nil, context)];
+				[controller beginSheetModalForWindow:_window completionHandler:^(NSString* fileType){
+					if(fileType)
+						context->set_file_type(to_s(fileType));
+				}];
 			}
 		}
 
 		void show_document (std::string const& path, document::document_ptr document)
 		{
+			if(path != NULL_STR)
+			{
+				auto const settings = settings_for_path(document->virtual_path(), document->file_type(), path::parent(path), document->document_variables());
+				document->set_indent(text::indent_t(std::max(1, settings.get(kSettingsTabSizeKey, 4)), SIZE_T_MAX, settings.get(kSettingsSoftTabsKey, false)));
+			}
+
 			[_self didOpenDocument:document];
 			document->close();
 		}
@@ -67,53 +93,22 @@ namespace
 		}
 
 	private:
+		document::document_ptr _document;
 		DocumentOpenHelper* _self;
 		NSWindow* _window;
 	};
 }
 
 @implementation DocumentOpenHelper
-@synthesize delegate;
-
-- (id)init
-{
-	if(self = [super init])
-	{
-	}
-	return self;
-}
-
-- (void)setDelegate:(id <DocumentOpenHelperDelegate>)aDelegate { delegate = aDelegate; }
-- (id <DocumentOpenHelperDelegate>)delegate                    { return delegate; }
-
-- (void)tryOpenDocument:(document::document_ptr const&)aDocument forWindow:(NSWindow*)aWindow delegate:(id <DocumentOpenHelperDelegate>)aDelegate
+- (void)tryOpenDocument:(document::document_ptr const&)aDocument forWindow:(NSWindow*)aWindow completionHandler:(void(^)(std::string const& error, oak::uuid_t const& filterUUID))aCompletionHandler
 {
 	D(DBF_DocumentController_OpenHelper, bug("%s, already open %s\n", aDocument->display_name().c_str(), BSTR(aDocument->is_open())););
-	[self retain]; // keep us retained until document is opened
-
-	delegate = aDelegate;
-	if(aDocument->try_open(document::open_callback_ptr((document::open_callback_t*)new open_callback_t(self, aWindow))))
+	self.callback = aCompletionHandler;
+	if(aDocument->try_open(std::make_shared<open_callback_t>(aDocument, self, aWindow)))
 	{
 		[self didOpenDocument:aDocument];
 		aDocument->close();
 	}
-}
-
-- (void)selectEncodingSheetDidEnd:(NSAlert*)alert returnCode:(NSInteger)returnCode contextInfo:(info_t*)info
-{
-	if(returnCode == NSAlertDefaultReturn)
-		info->context->set_charset(text::split(to_s(info->controller.currentEncoding), " ")[0]);
-	[alert release];
-	[info->controller release];
-	delete info;
-}
-
-- (void)fileTypeDialog:(FileTypeDialog*)fileTypeDialog didSelectFileType:(NSString*)aFileType contextInfo:(void*)info
-{
-	if(aFileType)
-		((info_t*)info)->context->set_file_type(to_s(aFileType));
-	[fileTypeDialog release];
-	delete (info_t*)info;
 }
 
 - (void)didOpenDocument:(document::document_ptr const&)aDocument
@@ -121,16 +116,12 @@ namespace
 	D(DBF_DocumentController_OpenHelper, bug("%s\n", aDocument->display_name().c_str()););
 	if(aDocument->recent_tracking() && aDocument->path() != NULL_STR)
 		[[NSDocumentController sharedDocumentController] noteNewRecentDocumentURL:[NSURL fileURLWithPath:[NSString stringWithCxxString:aDocument->path()]]]; 
-	if([delegate respondsToSelector:@selector(documentOpenHelper:didOpenDocument:)])
-		[delegate documentOpenHelper:self didOpenDocument:aDocument];
-	[self release];
+	self.callback(NULL_STR, oak::uuid_t());
 }
 
 - (void)failedToOpenDocument:(document::document_ptr const&)aDocument error:(std::string const&)aMessage usingFilter:(oak::uuid_t const&)filterUUID
 {
 	D(DBF_DocumentController_OpenHelper, bug("%s\n", aDocument->display_name().c_str()););
-	if([delegate respondsToSelector:@selector(documentOpenHelper:failedToOpenDocument:error:usingFilter:)])
-		[delegate documentOpenHelper:self failedToOpenDocument:aDocument error:aMessage usingFilter:filterUUID];
-	[self release];
+	self.callback(aMessage == NULL_STR ? "unknown error" : aMessage, filterUUID);
 }
 @end

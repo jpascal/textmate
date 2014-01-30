@@ -12,11 +12,8 @@ require 'uri'
 require 'cgi'
 require 'dbm'
 require 'date'
-
-# built using json 1.7.5 gem
-require 'rubygems'
-require 'json'
-
+require 'yaml'
+require 'set'
 
 # Helper class to handle searching for GitHub users
 # by their email address. Caches mappings to a file
@@ -47,6 +44,20 @@ class GitHubLookup
     @db['ccc5b318408880a67eeebf0d18177fb5'] = 'rhencke'
     @db['4cf620221f7e622260f8424b8142451f'] = 'ryanmaxwell'
     @db['5780111eb4b5565816d9388b091e1057'] = 'youngrok'
+    @db['1bafa0ecf5643c71e6d5dea309889d21'] = 'bobrocke'
+    @db['16e62cebf0c65d7018b263d0f8be36c1'] = 'sclukey'
+    @db['bee584c4bc4deac1ee91006b97a8fc53'] = 'mstarke'
+    @db['578b7853042db14893ee5ec2ce043f98'] = 'yyyc514'
+    @db['8838005371ab9c0b1d40f0504bf8832a'] = 'garysweaver'
+    @db['1b97e22672bc2577ebbb63ef895debd4'] = 'jtmkrueger'
+    @db['3413d8cb793e54a6e062391875fd2636'] = 'jacob-carlborg'
+    @db['a8cb0cb6a2406ee9d85ea72f7c040697'] = 'jsuder'
+    @db['af76f04ca3004be2d6b0690bd0a6ff7c'] = 'luikore'
+    @db['bbe6320b030b1bb50349e4554d3169d6'] = 'AJ-Acevedo'
+    @db['a734c5fda1ef1237fa6a26a64940d0b1'] = 'Dirklectisch'
+    @db['7640cae93abde468b73f35d6620a9b04'] = 'caleb'
+    @db['f889181fc58ccb702822b54fe3702d24'] = 'codykrieger'
+    @db['571db4b87bd7d2fec3dcd5524cb7d9ae'] = 'rdwampler'
     ObjectSpace.define_finalizer(@db, proc {|id| db.close })
   end
 
@@ -63,7 +74,7 @@ class GitHubLookup
     http.verify_mode = OpenSSL::SSL::VERIFY_NONE
 
     # issue request
-    request = Net::HTTP::Get.new(uri.request_uri)
+    request = Net::HTTP::Get.new(uri.request_uri, {'User-Agent' => 'curl'})
     response = http.request(request)
 
     # could be a 404, return nil if so
@@ -71,7 +82,7 @@ class GitHubLookup
       return @db[emailhash] = nil
     end
 
-    user = JSON.parse(response.body)
+    user = YAML.load(response.body)
     # save result to k/v store
     return @db[emailhash] = user['user']['login']
   end
@@ -80,6 +91,7 @@ end
 
 def generate_credits(dbm_file)
   GitHubLookup.initialize(dbm_file)
+  did_warn_db = Set.new
 
   # use git's log command to pull out basic info:
   # git hash, author name, email address, author date, commit summary
@@ -107,7 +119,12 @@ def generate_credits(dbm_file)
       # profile.
       if !user || user == ''
         user = nil
-        STDERR << "WARNING: failed to find GitHub user for #{name} <#{fields[2]}>\n";
+
+        key = "#{name} <#{fields[2]}>"
+        unless did_warn_db.include?(key)
+          did_warn_db.add(key)
+          STDERR << "WARNING: failed to find GitHub user for #{key}\n";
+        end
       end
 
       yield(hash, name, subject, body, userpic, date, user)

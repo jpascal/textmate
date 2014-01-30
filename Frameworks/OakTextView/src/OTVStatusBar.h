@@ -1,27 +1,18 @@
-#import <OakAppKit/OakStatusBar.h>
-#import <text/types.h>
+#import <OakAppKit/OakGradientView.h>
 
-@interface OTVStatusBar : OakStatusBar
-{
-	text::range_t caretPosition;
-	NSString* grammarName;
-	NSString* symbolName;
-	BOOL isMacroRecording;
-	BOOL softTabs;
-	int32_t tabSize;
+@protocol OTVStatusBarDelegate <NSObject>
+- (void)showBundleItemSelector:(NSPopUpButton*)popUpButton;
+- (void)showSymbolSelector:(NSPopUpButton*)popUpButton;
+@end
 
-	id delegate;
+@interface OTVStatusBar : OakGradientView
+- (void)showBundlesMenu:(id)sender;
+@property (nonatomic) NSString* selectionString;
+@property (nonatomic) NSString* grammarName;
+@property (nonatomic) NSString* symbolName;
+@property (nonatomic) BOOL isMacroRecording;
+@property (nonatomic) BOOL softTabs;
+@property (nonatomic) int32_t tabSize;
 
-	NSImage* pulsedRecordingIndicator;
-	NSTimer* recordingTimer;
-	CGFloat recordingTime;
-}
-- (void)setCaretPosition:(std::string const&)range;
-@property (nonatomic, copy)   NSString* grammarName;
-@property (nonatomic, copy)   NSString* symbolName;
-@property (nonatomic, assign) BOOL isMacroRecording;
-@property (nonatomic, assign) BOOL softTabs;
-@property (nonatomic, assign) int32_t tabSize;
-
-@property (nonatomic, assign) id delegate;
+@property (nonatomic, weak) id <OTVStatusBarDelegate> delegate;
 @end

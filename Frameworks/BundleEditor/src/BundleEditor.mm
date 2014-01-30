@@ -2,14 +2,16 @@
 #import "PropertiesViewController.h"
 #import "OakRot13Transformer.h"
 #import "be_entry.h"
-#import <OakFoundation/OakFoundation.h>
 #import <OakFoundation/NSString Additions.h>
 #import <OakFoundation/OakStringListTransformer.h>
 #import <OakAppKit/NSAlert Additions.h>
 #import <OakAppKit/NSImage Additions.h>
+#import <OakAppKit/OakAppKit.h>
 #import <OakAppKit/OakSound.h>
 #import <OakAppKit/OakFileIconImage.h>
 #import <OakTextView/OakDocumentView.h>
+#import <BundlesManager/BundlesManager.h>
+#import <command/runner.h> // fix_shebang
 #import <plist/ascii.h>
 #import <plist/delta.h>
 #import <text/decode.h>
@@ -38,7 +40,12 @@ static BundleEditor* SharedInstance;
 namespace
 {
 	static bundles::kind_t const PlistItemKinds[] = { bundles::kItemTypeSettings, bundles::kItemTypeMacro, bundles::kItemTypeTheme };
-	static std::vector<std::string> const PlistKeySortOrder { "shellVariables", "disabled", "name", "value", "comment", "match", "begin", "while", "end", "applyEndPatternLast", "captures", "beginCaptures", "whileCaptures", "endCaptures", "contentName", "injections", "patterns", "repository", "include", "increaseIndentPattern", "decreaseIndentPattern", "indentNextLinePattern", "unIndentedLinePattern", "disableIndentCorrections", "indentedSoftWrap", "format", "foldingStartMarker", "foldingStopMarker", "foldingIndentedBlockStart", "foldingIndentedBlockIgnore", "characterClass", "smartTypingPairs", "highlightPairs", "showInSymbolList", "symbolTransformation", "disableDefaultCompletion", "completions", "completionCommand", "spellChecking", "softWrap", "fontName", "fontStyle", "fontSize", "foreground", "background", "bold", "caret", "invisibles", "italic", "misspelled", "selection", "underline" };
+
+	static std::vector<std::string> const& PlistKeySortOrder ()
+	{
+		static auto const res = new std::vector<std::string>{ "shellVariables", "disabled", "name", "value", "comment", "match", "begin", "while", "end", "applyEndPatternLast", "captures", "beginCaptures", "whileCaptures", "endCaptures", "contentName", "injections", "patterns", "repository", "include", "increaseIndentPattern", "decreaseIndentPattern", "indentNextLinePattern", "unIndentedLinePattern", "disableIndentCorrections", "indentOnPaste", "indentedSoftWrap", "format", "foldingStartMarker", "foldingStopMarker", "foldingIndentedBlockStart", "foldingIndentedBlockIgnore", "characterClass", "smartTypingPairs", "highlightPairs", "showInSymbolList", "symbolTransformation", "disableDefaultCompletion", "completions", "completionCommand", "spellChecking", "softWrap", "fontName", "fontStyle", "fontSize", "foreground", "background", "bold", "caret", "invisibles", "italic", "misspelled", "selection", "underline" };
+		return *res;
+	}
 
 	static struct item_info_t { bundles::kind_t kind; std::string plist_key; std::string grammar; std::string file_type; std::string kind_string; NSString* view_controller; NSString* file; } item_infos[] =
 	{
@@ -195,8 +202,7 @@ static be::entry_ptr parent_for_column (NSBrowser* aBrowser, NSInteger aColumn, 
 
 	[browser setDelegate:self];
 	[browser loadColumnZero];
-	if([browser respondsToSelector:@selector(setAutohidesScroller:)])
-		[browser setAutohidesScroller:YES];
+	[browser setAutohidesScroller:YES];
 
 	[[self window] makeFirstResponder:browser];
 }
@@ -208,7 +214,7 @@ static be::entry_ptr parent_for_column (NSBrowser* aBrowser, NSInteger aColumn, 
 	for(NSInteger col = 0; col < [browser lastColumn]+1; ++col)
 	{
 		NSInteger row = [browser selectedRowInColumn:col];
-		if(row == -1)
+		if(row == -1 || row >= entry->children().size())
 			break;
 		entry = entry->children()[row];
 		selection.push_back(entry->identifier());
@@ -234,7 +240,7 @@ static be::entry_ptr parent_for_column (NSBrowser* aBrowser, NSInteger aColumn, 
 
 - (void)didChangeModifiedState
 {
-	[self setDocumentEdited:bundleItem && (changes.find(bundleItem) != changes.end() || propertiesChanged || bundleItemContent->is_modified())];
+	[self setDocumentEdited:bundleItem && (changes.find(bundleItem) != changes.end() || propertiesChanged || (bundleItemContent && bundleItemContent->is_modified()))];
 }
 
 // ==================
@@ -251,12 +257,12 @@ static be::entry_ptr parent_for_column (NSBrowser* aBrowser, NSInteger aColumn, 
 	bundles::item_ptr bundle = row != -1 ? bundles->children()[row]->represented_item() : bundles::item_ptr();
 	if(aType == bundles::kItemTypeBundle || bundle)
 	{
-		std::map<std::string, std::string> environment = variables_for_path();
+		std::map<std::string, std::string> environment = variables_for_path(oak::basic_environment());
 		ABMutableMultiValue* value = [[[ABAddressBook sharedAddressBook] me] valueForProperty:kABEmailProperty];
 		if(NSString* email = [value valueAtIndex:[value indexForIdentifier:[value primaryIdentifier]]])
-			environment.insert(std::make_pair("TM_ROT13_EMAIL", decode::rot13(to_s(email))));
+			environment.emplace("TM_ROT13_EMAIL", decode::rot13(to_s(email)));
 
-		bundles::item_ptr item(new bundles::item_t(oak::uuid_t().generate(), aType == bundles::kItemTypeBundle ? bundles::item_ptr() : bundle, aType));
+		auto item = std::make_shared<bundles::item_t>(oak::uuid_t().generate(), aType == bundles::kItemTypeBundle ? bundles::item_ptr() : bundle, aType);
 		plist::dictionary_t plist = plist::load(to_s(path));
 		expand_visitor_t visitor(environment);
 		visitor(plist);
@@ -264,17 +270,11 @@ static be::entry_ptr parent_for_column (NSBrowser* aBrowser, NSInteger aColumn, 
 		if(plist.find(bundles::kFieldName) == plist.end())
 			plist[bundles::kFieldName] = std::string("untitled");
 		item->set_plist(plist);
-		changes.insert(std::make_pair(item, plist));
+		changes.emplace(item, plist);
 		bundles::add_item(item);
 		[self revealBundleItem:item];
 		[self didChangeModifiedState];
 	}
-}
-
-- (void)createItemSheetDidEnd:(NSAlert*)alert returnCode:(NSInteger)returnCode contextInfo:(void*)info
-{
-	if(returnCode == NSAlertDefaultReturn)
-		[self createItemOfType:(bundles::kind_t)[[(NSPopUpButton*)[alert accessoryView] selectedItem] tag]];
 }
 
 - (void)newDocument:(id)sender
@@ -294,7 +294,10 @@ static be::entry_ptr parent_for_column (NSBrowser* aBrowser, NSInteger aColumn, 
 	[typeChooser setMenu:menu];
 	[typeChooser sizeToFit];
 	[alert setAccessoryView:typeChooser];
-	[alert beginSheetModalForWindow:[self window] modalDelegate:self didEndSelector:@selector(createItemSheetDidEnd:returnCode:contextInfo:) contextInfo:NULL];
+	OakShowAlertForWindow(alert, self.window, ^(NSInteger returnCode){
+		if(returnCode == NSAlertDefaultReturn)
+			[self createItemOfType:(bundles::kind_t)[[(NSPopUpButton*)[alert accessoryView] selectedItem] tag]];
+	});
 	[[alert window] recalculateKeyViewLoop];
 	[[alert window] makeFirstResponder:typeChooser];
 }
@@ -328,6 +331,14 @@ static be::entry_ptr parent_for_column (NSBrowser* aBrowser, NSInteger aColumn, 
 		changes.erase(trashedItem);
 		bundles::remove_item(trashedItem);
 		[self didChangeModifiedState];
+
+		if(!trashedItem->paths().empty())
+		{
+			std::string itemFolder = path::parent(trashedItem->paths().front());
+			if(trashedItem->kind() == bundles::kItemTypeBundle && trashedItem->paths().size() == 1)
+				itemFolder = path::parent(itemFolder);
+			[[BundlesManager sharedInstance] reloadPath:[NSString stringWithCxxString:itemFolder]];
+		}
 	}
 }
 
@@ -335,6 +346,12 @@ static be::entry_ptr parent_for_column (NSBrowser* aBrowser, NSInteger aColumn, 
 {
 	[self showWindow:self];
 	[self setBundleItem:anItem];
+
+	if(anItem->paths().empty())
+	{
+		changes.emplace(anItem, anItem->plist());
+		[self didChangeModifiedState];
+	}
 
 	std::vector<be::entry_ptr> const& allBundles = bundles->children();
 	iterate(bundle, allBundles)
@@ -365,7 +382,7 @@ static be::entry_ptr parent_for_column (NSBrowser* aBrowser, NSInteger aColumn, 
 
 - (BOOL)commitEditing
 {
-	if(!bundleItem)
+	if(!bundleItem || !bundleItemContent)
 		return YES;
 
 	[sharedPropertiesViewController commitEditing];
@@ -376,18 +393,31 @@ static be::entry_ptr parent_for_column (NSBrowser* aBrowser, NSInteger aColumn, 
 
 	plist::dictionary_t plist = plist::convert((__bridge CFPropertyListRef)bundleItemProperties);
 
-	std::string const& content = bundleItemContent->buffer().substr(0, bundleItemContent->buffer().size());
+	std::string const& content = bundleItemContent->content();
 	item_info_t const& info = info_for(bundleItem->kind());
+
+	plist::any_t parsedContent;
+	if(info.plist_key == NULL_STR || oak::contains(std::begin(PlistItemKinds), std::end(PlistItemKinds), info.kind))
+	{
+		bool success = false;
+		parsedContent = plist::parse_ascii(content, &success);
+		if(!success)
+		{
+			NSAlert* alert = [NSAlert alertWithMessageText:@"Error Parsing Property List" defaultButton:@"OK" alternateButton:nil otherButton:nil informativeTextWithFormat:@"The property list is not valid.\n\nUnfortunately I am presently unable to point to where the parser failed."];
+			OakShowAlertForWindow(alert, self.window, ^(NSInteger returnCode){ });
+			return NO;
+		}
+	}
+
 	if(info.plist_key == NULL_STR)
 	{
-		plist::any_t any = plist::parse_ascii(content);
-		if(plist::dictionary_t const* plistSubset = boost::get<plist::dictionary_t>(&any))
+		if(plist::dictionary_t const* plistSubset = boost::get<plist::dictionary_t>(&parsedContent))
 		{
 			std::vector<std::string> keys;
 			if(info.kind == bundles::kItemTypeGrammar)
 				keys = { "comment", "patterns", "repository", "injections" };
 			else if(info.kind == bundles::kItemTypeTheme)
-				keys = { "gutterSettings", "settings" };
+				keys = { "gutterSettings", "settings", "colorSpaceName" };
 
 			iterate(key, keys)
 			{
@@ -400,7 +430,7 @@ static be::entry_ptr parent_for_column (NSBrowser* aBrowser, NSInteger aColumn, 
 	else
 	{
 		if(oak::contains(std::begin(PlistItemKinds), std::end(PlistItemKinds), info.kind))
-				plist[info.plist_key] = plist::parse_ascii(content);
+				plist[info.plist_key] = parsedContent;
 		else	plist[info.plist_key] = content;
 	}
 
@@ -429,12 +459,35 @@ static be::entry_ptr parent_for_column (NSBrowser* aBrowser, NSInteger aColumn, 
 - (void)saveDocument:(id)sender
 {
 	[self commitEditing];
+	std::map<bundles::item_ptr, plist::dictionary_t> failedToSave;
 	iterate(pair, changes)
 	{
-		pair->first->set_plist(pair->second);
-		pair->first->save();
+		auto item = pair->first;
+
+		item->set_plist(pair->second);
+		if(item->save())
+		{
+			[[BundlesManager sharedInstance] reloadPath:[NSString stringWithCxxString:item->paths().front()]];
+		}
+		else
+		{
+			failedToSave.insert(*pair);
+		}
 	}
-	changes.clear();
+	changes.swap(failedToSave);
+
+	if(!changes.empty())
+	{
+		NSAlert* alert = [NSAlert alertWithMessageText:@"Error Saving Bundle Item" defaultButton:@"OK" alternateButton:nil otherButton:nil informativeTextWithFormat:@"Sorry, but something went wrong while trying to save your changes. More info may be available via the console."];
+		OakShowAlertForWindow(alert, self.window, ^(NSInteger returnCode){
+			if(returnCode == NSAlertSecondButtonReturn) // Discard Changes
+			{
+				changes.clear();
+				[self didChangeModifiedState];
+			}
+		});
+	}
+
 	[self didChangeModifiedState];
 }
 
@@ -548,7 +601,7 @@ static NSMutableDictionary* DictionaryForBundleItem (bundles::item_ptr const& aB
 			[res removeObjectForKey:@"dontFollowNewOutput"];
 			[res setObject:@2 forKey:@"version"];
 			if(cmd.auto_scroll_output)
-				[res setObject:YES_obj forKey:@"autoScrollOutput"];
+				[res setObject:@YES forKey:@"autoScrollOutput"];
 			for(size_t i = 0; i != sizeofA(popups); ++i)
 				[res setObject:[popups[i].array objectAtIndex:popups[i].index] forKey:popups[i].key];
 		}
@@ -622,7 +675,7 @@ static NSMutableDictionary* DictionaryForPropertyList (plist::dictionary_t const
 		if(info.kind == bundles::kItemTypeGrammar)
 			keys = { "comment", "patterns", "repository", "injections" };
 		else if(info.kind == bundles::kItemTypeTheme)
-			keys = { "gutterSettings", "settings" };
+			keys = { "gutterSettings", "settings", "colorSpaceName" };
 
 		plist::dictionary_t plistSubset;
 		iterate(key, keys)
@@ -630,12 +683,12 @@ static NSMutableDictionary* DictionaryForPropertyList (plist::dictionary_t const
 			if(plist.find(*key) != plist.end())
 				plistSubset[*key] = plist.find(*key)->second;
 		}
-		bundleItemContent = document::from_content(to_s(plistSubset, plist::kPreferSingleQuotedStrings, PlistKeySortOrder), info.grammar);
+		bundleItemContent = document::from_content(to_s(plistSubset, plist::kPreferSingleQuotedStrings, PlistKeySortOrder()), info.grammar);
 	}
 	else if(oak::contains(std::begin(PlistItemKinds), std::end(PlistItemKinds), info.kind))
 	{
 		if(plist.find(info.plist_key) != plist.end())
-			bundleItemContent = document::from_content(to_s(plist.find(info.plist_key)->second, plist::kPreferSingleQuotedStrings, PlistKeySortOrder), info.grammar);
+			bundleItemContent = document::from_content(to_s(plist.find(info.plist_key)->second, plist::kPreferSingleQuotedStrings, PlistKeySortOrder()), info.grammar);
 	}
 	else
 	{
@@ -649,6 +702,7 @@ static NSMutableDictionary* DictionaryForPropertyList (plist::dictionary_t const
 	}
 
 	bundleItemContent = bundleItemContent ?: document::from_content("");
+	bundleItemContent->set_custom_name("«bundle item»");
 	bundleItemContent->add_callback(documentCallback);
 	[documentView setDocument:bundleItemContent];
 
@@ -694,18 +748,6 @@ static NSMutableDictionary* DictionaryForPropertyList (plist::dictionary_t const
 	[[[drawer contentView] window] recalculateKeyViewLoop];
 }
 
-- (void)closeWarningDidEnd:(NSAlert*)alert returnCode:(NSInteger)returnCode contextInfo:(void*)info
-{
-	if(returnCode != NSAlertSecondButtonReturn) // Not "Cancel"
-	{
-		if(returnCode == NSAlertFirstButtonReturn) // "Save"
-			[self saveDocument:self];
-		else if(returnCode == NSAlertThirdButtonReturn) // "Don’t Save"
-			changes.clear();
-		[self close];
-	}
-}
-
 static NSString* DescriptionForChanges (std::map<bundles::item_ptr, plist::dictionary_t> const& changes)
 {
 	NSString* res = [NSString stringWithCxxString:text::format("Do you want to save the changes made to %zu items?", changes.size())];
@@ -738,7 +780,16 @@ static NSString* DescriptionForChanges (std::map<bundles::item_ptr, plist::dicti
 	[alert setMessageText:DescriptionForChanges(changes)];
 	[alert setInformativeText:@"Your changes will be lost if you don’t save them."];
 	[alert addButtons:@"Save", @"Cancel", @"Don’t Save", nil];
-	[alert beginSheetModalForWindow:self.window modalDelegate:self didEndSelector:@selector(closeWarningDidEnd:returnCode:contextInfo:) contextInfo:NULL];
+	OakShowAlertForWindow(alert, self.window, ^(NSInteger returnCode){
+		if(returnCode != NSAlertSecondButtonReturn) // Not "Cancel"
+		{
+			if(returnCode == NSAlertFirstButtonReturn) // "Save"
+				[self saveDocument:self];
+			else if(returnCode == NSAlertThirdButtonReturn) // "Don’t Save"
+				changes.clear();
+			[self close];
+		}
+	});
 	return NO;
 }
 @end

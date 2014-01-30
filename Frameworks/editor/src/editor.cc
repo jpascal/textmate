@@ -2,16 +2,17 @@
 #include "transform.h"
 #include "indent.h"
 #include <bundles/bundles.h>
+#include <command/runner.h>
 #include <text/case.h>
 #include <text/ctype.h>
 #include <text/classification.h>
 #include <text/utf8.h>
+#include <text/hexdump.h>
+#include <text/newlines.h>
 #include <text/parse.h>
 #include <text/tokenize.h>
 #include <text/trim.h>
-#include <OakSystem/command.h>
-#include <cf/run_loop.h>
-#include <command/runner.h>
+#include <io/exec.h>
 
 namespace ng
 {
@@ -42,9 +43,15 @@ namespace ng
 		if(editor == editors().end())
 		{
 			document->add_callback(&callback);
-			editor = editors().insert(std::make_pair(document->identifier(), editor_ptr(new editor_t(document)))).first;
+			editor = editors().emplace(document->identifier(), std::make_shared<editor_t>(document)).first;
 		}
 		return editor->second;
+	}
+
+	std::string sanitized_utf8 (std::string str)
+	{
+		str.erase(utf8::remove_malformed(str.begin(), str.end()), str.end());
+		return str;
 	}
 
 	static find::options_t convert (std::map<std::string, std::string> const& options)
@@ -136,14 +143,14 @@ namespace ng
 			{
 				if(range->empty())
 				{
-					_marks.push_back(mark_t(range->first, mark_t::kUnpairedMark));
-					_marks.push_back(mark_t(range->first, mark_t::kEndMark));
+					_marks.emplace_back(range->first, mark_t::kUnpairedMark);
+					_marks.emplace_back(range->first, mark_t::kEndMark);
 				}
 				else
 				{
 					size_t userInfo = (range->columnar ? kColumnar : 0) | (range->last < range->first ? kReversed : 0);
-					_marks.push_back(mark_t(range->min(), mark_t::kBeginMark, userInfo));
-					_marks.push_back(mark_t(range->max(), mark_t::kEndMark, userInfo));
+					_marks.emplace_back(range->min(), mark_t::kBeginMark, userInfo);
+					_marks.emplace_back(range->max(), mark_t::kEndMark, userInfo);
 				}
 			}
 
@@ -227,7 +234,7 @@ namespace ng
 	{
 		std::multimap<range_t, std::string> replacements;
 		citerate(range, dissect_columnar(buffer, selections))
-			replacements.insert(std::make_pair(*range, op(buffer.substr(range->min().index, range->max().index))));
+			replacements.emplace(*range, op(buffer.substr(range->min().index, range->max().index)));
 		return replacements;
 	}
 
@@ -306,7 +313,7 @@ namespace ng
 		{
 			if(indent != NULL_STR) _options["indent"]    = indent;
 			if(complete)           _options["complete"]  = "1";
-			if(fragments > 1)      _options["fragments"] = text::format("%zu", fragments);
+			if(fragments > 1)      _options["fragments"] = std::to_string(fragments);
 			if(columnar)           _options["columnar"]  = "1";
 		}
 		std::map<std::string, std::string> const& options () const { return _options; }
@@ -343,7 +350,7 @@ namespace ng
 		citerate(range, dissect_columnar(buffer, selections))
 			v.push_back(buffer.substr(range->min().index, range->max().index));
 		bool columnar = selections.size() == 1 && selections.last().columnar;
-		return clipboard_t::entry_ptr(new my_clipboard_entry_t(text::join(v, "\n"), indent, complete, v.size(), columnar));
+		return std::make_shared<my_clipboard_entry_t>(text::join(v, "\n"), indent, complete, v.size(), columnar);
 	}
 
 	static bool suitable_for_reindent (std::string const& str)
@@ -368,38 +375,50 @@ namespace ng
 		return selectInsertions ? res : ng::move(_buffer, res, kSelectionMoveToEndOfSelection);
 	}
 
-	ranges_t editor_t::snippet (size_t from, size_t to, std::string const& str, std::map<std::string, std::string> const& variables)
+	ranges_t editor_t::snippet (size_t from, size_t to, std::string const& str, std::map<std::string, std::string> const& variables, bool disableIndent)
 	{
 		struct callback_t : snippet::run_command_callback_t
 		{
 			std::string run_command (std::string const& cmd, std::map<std::string, std::string> const& environment)
 			{
-				struct command_t : oak::command_t
+				__block int status = 0;
+				__block std::string output, error;
+
+				std::string script = cmd;
+				command::fix_shebang(&script);
+
+				std::string scriptPath = path::temp("snippet_command");
+				path::set_content(scriptPath, script);
+				chmod(scriptPath.c_str(), S_IRWXU);
+
+				if(io::process_t process = io::spawn(std::vector<std::string>{ scriptPath }, environment))
 				{
-					void did_exit (int rc, std::string const& output, std::string const& error)
-					{
-						result = rc == 0 ? output : error;
-						run_loop.stop();
-					}
+					close(process.in);
 
-					std::string result;
-					cf::run_loop_t run_loop;
-				};
+					dispatch_group_t group = dispatch_group_create();
+					dispatch_group_async(group, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+						io::exhaust_fd(process.out, &output);
+					});
+					dispatch_group_async(group, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+						io::exhaust_fd(process.err, &error);
+					});
+					dispatch_group_async(group, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+						if(waitpid(process.pid, &status, 0) != process.pid)
+							perror("waitpid");
+					});
+					dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+					dispatch_release(group);
+				}
 
-				command_t runner;
-				runner.command = cmd;
-				runner.environment = environment;
+				unlink(scriptPath.c_str());
 
-				command::fix_shebang(&runner.command);
-
-				runner.launch();
-				runner.run_loop.start();
-				return runner.result;
+				std::string const& res = WIFEXITED(status) && WEXITSTATUS(status) == 0 ? output : error;
+				return utf8::is_valid(res.begin(), res.end()) ? res : sanitized_utf8(res);
 			}
 
 		} callback;
 
-		std::string indent = _buffer.substr(_buffer.begin(_buffer.convert(from).line), from);
+		std::string indent = disableIndent ? "" : _buffer.substr(_buffer.begin(_buffer.convert(from).line), from);
 		size_t i = 0;
 		while(i < indent.size() && text::is_space(indent[i]))
 			++i;
@@ -408,9 +427,14 @@ namespace ng
 		snippet::snippet_t const& snippet = snippet::parse(str, variables, indent, _buffer.indent(), &callback);
 
 		std::multimap<range_t, std::string> map;
-		map.insert(std::make_pair(range_t(from, to), snippet.text));
+		map.emplace(range_t(from, to), snippet.text);
 		_snippets.push(snippet, this->replace(map, true).last());
 		return _snippets.current();
+	}
+
+	void editor_t::clear_snippets ()
+	{
+		_snippets.clear();
 	}
 
 	std::vector<std::string> const& editor_t::choices () const
@@ -434,7 +458,7 @@ namespace ng
 	void editor_t::set_placeholder_content (std::string const& str, size_t selectFrom)
 	{
 		std::multimap<range_t, std::string> map;
-		map.insert(std::make_pair(_snippets.current(), str));
+		map.emplace(_snippets.current(), str);
 		ng::ranges_t res = this->replace(map, true);
 		iterate(range, res)
 			range->min().index += selectFrom;
@@ -450,7 +474,8 @@ namespace ng
 
 		std::string str                            = entry->content();
 		std::map<std::string, std::string> options = entry->options();
-		std::replace(str.begin(), str.end(), '\r', '\n');
+		str.erase(text::convert_line_endings(str.begin(), str.end(), text::estimate_line_endings(str.begin(), str.end())), str.end());
+		str.erase(utf8::remove_malformed(str.begin(), str.end()), str.end());
 
 		std::string const& indent = options["indent"];
 		bool const complete       = options["complete"] == "1";
@@ -466,7 +491,7 @@ namespace ng
 			size_t i = 0;
 			std::multimap<range_t, std::string> insertions;
 			citerate(range, dissect_columnar(buffer, selections))
-				insertions.insert(std::make_pair(*range, words[i++ % words.size()]));
+				insertions.emplace(*range, words[i++ % words.size()]);
 			return ng::move(buffer, replace_helper(buffer, snippets, insertions), kSelectionMoveToEndOfSelection);
 		}
 
@@ -484,17 +509,17 @@ namespace ng
 				{
 					if(n+1 < buffer.lines())
 					{
-						insertions.insert(std::make_pair(visual_advance(buffer, buffer.begin(n), col), *line));
+						insertions.emplace(visual_advance(buffer, buffer.begin(n), col), *line);
 					}
 					else if(n < buffer.lines())
 					{
 						// we special-case this to ensure we do not insert at last line with carry, as that will cause potential following insertions to have a lower index, since those will be at EOB w/o a carry
 						index_t pos = visual_advance(buffer, buffer.begin(n), col);
-						insertions.insert(std::make_pair(pos.index, std::string(pos.carry, ' ') + *line));
+						insertions.emplace(index_t(pos.index), std::string(pos.carry, ' ') + *line);
 					}
 					else
 					{
-						insertions.insert(std::make_pair(index_t(buffer.size()), "\n" + std::string(col, ' ') + *line));
+						insertions.emplace(index_t(buffer.size()), "\n" + std::string(col, ' ') + *line);
 					}
 					++n;
 				}
@@ -506,7 +531,7 @@ namespace ng
 				ng::range_t caret = dissect_columnar(buffer, selections).last();
 				citerate(line, text::tokenize(str.begin(), str.end(), '\n'))
 				{
-					insertions.insert(std::make_pair(caret, *line));
+					insertions.emplace(caret, *line);
 					caret = caret.max();
 				}
 				return ng::move(buffer, replace_helper(buffer, snippets, insertions), kSelectionMoveToEndOfSelection);
@@ -528,7 +553,9 @@ namespace ng
 					str = indent + str;
 				if(complete)
 				{
-					std::string const& rightOfCaret = buffer.substr(index, buffer.eol(line));
+					size_t const rightIndex = selections.last().max().index;
+					size_t const lastLine  = buffer.convert(rightIndex).line;
+					std::string const& rightOfCaret = buffer.substr(rightIndex, buffer.eol(lastLine));
 					if(!text::is_blank(rightOfCaret.data(), rightOfCaret.data() + rightOfCaret.size()))
 						str += '\n';
 				}
@@ -560,12 +587,13 @@ namespace ng
 				} 
 				else if(!pasteBehavior || *pasteBehavior != "disable")
 				{
-					indent::fsm_t fsm = indent::create_fsm(buffer, indent::patterns_for_scope(buffer.scope(index)), line, indentSize, tabSize);
+					indent::fsm_t fsm = indent::create_fsm(buffer, line, indentSize, tabSize);
+					auto const patterns = indent::patterns_for_scope(buffer.scope(index));
 					iterate(it, v)
 					{
-						if(fsm.is_ignored(std::string(it->first, it->second)))
+						if(fsm.is_ignored(std::string(it->first, it->second), patterns))
 							continue;
-						size_t indent = fsm.scan_line(std::string(it->first, it->second));
+						size_t indent = fsm.scan_line(std::string(it->first, it->second), patterns);
 						int oldIndent = indent::leading_whitespace(it->first, it->second, tabSize);
 						transform::shift shifter(std::max(((int)indent)-oldIndent, -minIndent), buffer.indent());
 						str = shifter(str);
@@ -602,13 +630,13 @@ namespace ng
 		{
 			text::pos_t pos = _buffer.convert(from);
 
-			indent::fsm_t fsm = indent::create_fsm(_buffer, indent::patterns_for_scope(_buffer.scope(from)), pos.line, _buffer.indent().indent_size(), _buffer.indent().tab_size());
+			indent::fsm_t fsm = indent::create_fsm(_buffer, pos.line, _buffer.indent().indent_size(), _buffer.indent().tab_size());
 			std::string const line = _buffer.substr(_buffer.begin(pos.line), _buffer.eol(pos.line));
-			bool ignored = fsm.is_ignored(line);
+			bool ignored = fsm.is_ignored(line, indent::patterns_for_line(_buffer, pos.line));
 			int actual = indent::leading_whitespace(line.data(), line.data() + line.size(), _buffer.indent().tab_size());
-			size_t desired = fsm.scan_line(line);
+			size_t desired = fsm.scan_line(line, indent::patterns_for_line(_buffer, pos.line));
 			if(ignored || actual == desired)
-				_lines.insert(std::make_pair(pos.line, actual));
+				_lines.emplace(pos.line, actual);
 		}
 
 		~indent_helper_t ()
@@ -630,13 +658,14 @@ namespace ng
 				if(actual != pair->second)
 					continue;
 
-				indent::fsm_t fsm = indent::create_fsm(_buffer, indent::patterns_for_scope(_buffer.scope(bol)), n, _buffer.indent().indent_size(), _buffer.indent().tab_size());
-				size_t desired = fsm.scan_line(line);
-				if(!fsm.is_ignored(line) && desired != actual)
+				indent::fsm_t fsm = indent::create_fsm(_buffer, n, _buffer.indent().indent_size(), _buffer.indent().tab_size());
+				auto const patterns = indent::patterns_for_line(_buffer, n);
+				size_t desired = fsm.scan_line(line, patterns);
+				if(!fsm.is_ignored(line, patterns) && desired != actual)
 				{
 					while(eos != _buffer.size() && text::is_whitespace(_buffer[eos]))
 						eos += _buffer[eos].size();
-					replacements.insert(std::make_pair(range_t(bol, eos), indent::create(desired, _buffer.indent().tab_size(), _buffer.indent().soft_tabs())));
+					replacements.emplace(range_t(bol, eos), indent::create(desired, _buffer.indent().tab_size(), _buffer.indent().soft_tabs()));
 				}
 			}
 
@@ -677,9 +706,9 @@ namespace ng
 		return NULL_STR;
 	}
 
-	void editor_t::insert_with_pairing (std::string const& str, bool indentCorrections, std::string const& scopeAttributes)
+	void editor_t::insert_with_pairing (std::string const& str, bool indentCorrections, bool autoPairing, std::string const& scopeAttributes)
 	{
-		if(!has_selection())
+		if(autoPairing && !has_selection())
 		{
 			size_t const caret = _selections.last().last.index;
 			if(_buffer.pairs().is_last(caret) && caret + str.size() <= _buffer.size() && str == _buffer.substr(caret, caret + str.size()))
@@ -691,7 +720,7 @@ namespace ng
 		}
 
 		indent_helper_t indent_helper(*this, _buffer, indentCorrections);
-		std::string const autoInsert = find_paired(str, scope(scopeAttributes));
+		std::string const autoInsert = autoPairing ? find_paired(str, scope(scopeAttributes)) : NULL_STR;
 		if(autoInsert != NULL_STR && has_selection())
 		{
 			_selections = replace_helper(_buffer, _snippets, map(_buffer, _selections, transform::surround(str, autoInsert)));
@@ -704,9 +733,9 @@ namespace ng
 		{
 			if(str == autoInsert && str.size() == 1)
 			{
-				size_t const caret = _selections.last().last.index;
-				std::string leftOfCaret = _buffer.substr(_buffer.begin(_buffer.convert(caret).line), caret);
-				if(std::count(leftOfCaret.begin(), leftOfCaret.end(), str[0]) % 2 == 1)
+				size_t const lineNo = _buffer.convert(_selections.last().last.index).line;
+				std::string line = _buffer.substr(_buffer.begin(lineNo), _buffer.eol(lineNo));
+				if(std::count(line.begin(), line.end(), str[0]) % 2 == 1)
 					return insert(str);
 			}
 
@@ -724,9 +753,9 @@ namespace ng
 		citerate(range, dissect_columnar(_buffer, _selections))
 		{
 			v.push_back(_buffer.substr(range->min().index, range->max().index));
-			insertions.insert(std::make_pair(*range, ""));
+			insertions.emplace(*range, "");
 		}
-		insertions.insert(std::make_pair(index, text::join(v, "\n")));
+		insertions.emplace(index, text::join(v, "\n"));
 		ranges_t sel, tmp = this->replace(insertions, selectInsertion);
 		iterate(range, tmp)
 		{
@@ -736,11 +765,11 @@ namespace ng
 		_selections = tmp.empty() ? tmp : sel;
 	}
 
-	void editor_t::snippet (std::string const& str, std::map<std::string, std::string> const& variables)
+	void editor_t::snippet (std::string const& str, std::map<std::string, std::string> const& variables, bool disableIndent)
 	{
 		size_t from = _selections.last().min().index;
 		size_t to   = _selections.last().max().index;
-		_selections = this->snippet(from, to, str, variables);
+		_selections = this->snippet(from, to, str, variables, disableIndent);
 	}
 
 	void editor_t::perform (action_t action, layout_t const* layout, bool indentCorrections, std::string const& scopeAttributes)
@@ -764,8 +793,8 @@ namespace ng
 				else
 				{
 					std::multimap<range_t, std::string> insertions;
-					insertions.insert(std::make_pair(range_t(from, caret), ""));
-					insertions.insert(std::make_pair(range_t(other, to), ""));
+					insertions.emplace(range_t(from, caret), "");
+					insertions.emplace(range_t(other, to), "");
 					_selections = this->replace(insertions).first();
 					action = kNop;
 				}
@@ -894,7 +923,6 @@ namespace ng
 			}
 			break;
 
-			case kReplace:
 			case kReplaceAll:
 			case kReplaceAllInSelection:
 			{
@@ -906,14 +934,18 @@ namespace ng
 					if(action == kReplaceAll || action == kReplaceAllInSelection)
 						options = options | find::all_matches;
 
-					replace(findEntry->content(), replaceEntry->content(), options, action == kReplaceAllInSelection);
+					replace_all(findEntry->content(), replaceEntry->content(), options, action == kReplaceAllInSelection);
 				}
 			}
 			break;
 
+			case kReplace:
 			case kReplaceAndFind:
 			{
-				perform(kReplace, layout, indentCorrections, scopeAttributes);
+				if(action == kReplace)
+				{
+					/* TODO Implement ‘Replace’ (after find) action */
+				}
 				perform(kFindNext, layout, indentCorrections, scopeAttributes);
 			}
 			break;
@@ -928,9 +960,9 @@ namespace ng
 					if(clipboard_t::entry_ptr oldEntry = yank_clipboard()->current())
 					{
 						if(action == kAppendSelectionToYankPboard)
-							entry.reset(new my_clipboard_entry_t(oldEntry->content() + entry->content(), "", false, 1, false));
+							entry = std::make_shared<my_clipboard_entry_t>(oldEntry->content() + entry->content(), "", false, 1, false);
 						else if(action == kPrependSelectionToYankPboard)
-							entry.reset(new my_clipboard_entry_t(entry->content() + oldEntry->content(), "", false, 1, false));
+							entry = std::make_shared<my_clipboard_entry_t>(entry->content() + oldEntry->content(), "", false, 1, false);
 					}
 				}
 				yank_clipboard()->push_back(entry);
@@ -960,7 +992,7 @@ namespace ng
 				if(marks.size() == 1)
 				{
 					std::multimap<range_t, std::string> replacements;
-					replacements.insert(std::make_pair(range_t(_selections.last().last, marks.begin()->first), ""));
+					replacements.emplace(range_t(_selections.last().last, marks.begin()->first), "");
 					_selections = this->replace(replacements);
 				}
 			}
@@ -1026,7 +1058,7 @@ namespace ng
 			case kTranspose:
 			{
 				std::multimap<range_t, std::string> replacements;
-				auto inserter = std::insert_iterator<decltype(replacements)>(replacements, replacements.begin());
+				auto inserter = std::inserter(replacements, replacements.end());
 				if(_selections.size() > 1 && not_empty(_buffer, _selections))
 				{
 					std::multiset<range_t> ranges(_selections.begin(), _selections.end());
@@ -1056,20 +1088,22 @@ namespace ng
 				size_t from = p0.line;
 				size_t to   = p1.line + (p1.column != 0 || p0.line == p1.line ? 1 : 0);
 
-				indent::fsm_t fsm = indent::create_fsm(_buffer, indent::patterns_for_scope(_buffer.scope(r.min().index)), from, _buffer.indent().indent_size(), _buffer.indent().tab_size());
+				indent::fsm_t fsm = indent::create_fsm(_buffer, from, _buffer.indent().indent_size(), _buffer.indent().tab_size());
 
 				std::multimap<range_t, std::string> replacements;
 				for(size_t n = from; n < to; ++n)
 				{
 					size_t bol = _buffer.begin(n);
 					size_t eos = bol;
-					if(fsm.is_ignored(_buffer.substr(bol, _buffer.eol(n))))
+
+					std::string const line = _buffer.substr(bol, _buffer.eol(n));
+					if(text::is_blank(line.data(), line.data() + line.size()))
 						continue;
 
 					while(eos != _buffer.size() && text::is_whitespace(_buffer[eos]))
 						eos += _buffer[eos].size();
 
-					replacements.insert(std::make_pair(range_t(bol, eos), indent::create(fsm.scan_line(_buffer.substr(bol, _buffer.eol(n))), _buffer.indent().tab_size(), _buffer.indent().soft_tabs())));
+					replacements.emplace(range_t(bol, eos), indent::create(fsm.scan_line(line, indent::patterns_for_line(_buffer, n)), _buffer.indent().tab_size(), _buffer.indent().soft_tabs()));
 				}
 
 				if(!replacements.empty())
@@ -1118,7 +1152,7 @@ namespace ng
 					str = transform::shift(fromCol, text::indent_t(8, 8, true))(str);
 
 					std::multimap<range_t, std::string> replacements;
-					replacements.insert(std::make_pair(range_t(from, to), str));
+					replacements.emplace(range_t(from, to), str);
 					ng::range_t range = this->replace(replacements, true).first();
 					_selections = range_t(visual_advance(_buffer, _buffer.begin(_buffer.convert(range.min().index).line), fromCol), visual_advance(_buffer, _buffer.begin(_buffer.convert(range.max().index).line), toCol), true);
 
@@ -1150,21 +1184,27 @@ namespace ng
 			_selections = selectionHelper.get(action == kChangeCaseOfLetter || action == kChangeCaseOfWord);
 	}
 
-	void editor_t::perform_replacements (std::multimap<text::range_t, std::string> const& replacements)
+	void editor_t::perform_replacements (std::multimap<std::pair<size_t, size_t>, std::string> const& replacements)
 	{
 		std::multimap<range_t, std::string> tmp;
-		riterate(pair, replacements)
+		for(auto pair : replacements)
 		{
-			// D(DBF_Editor, bug("replace %s with ‘%s’\n", std::string(pair->first).c_str(), pair->second.c_str()););
-			size_t from = _buffer.convert(pair->first.min());
-			size_t to   = _buffer.convert(pair->first.max());
-			tmp.insert(std::make_pair(range_t(from, to), pair->second));
+			// D(DBF_Editor, bug("replace range %zu-%zu with ‘%s’\n", pair->first.first, pair->first.second, pair->second.c_str()););
+			tmp.emplace(range_t(pair.first.first, pair.first.second), pair.second);
 		}
-		_selections = this->replace(tmp);
+
+		if(!tmp.empty())
+		{
+			preserve_selection_helper_t helper(_buffer, _selections);
+			this->replace(tmp);
+			_selections = helper.get(false);
+		}
 	}
 
 	ng::ranges_t editor_t::insert_tab_with_indent (ng::buffer_t& buffer, ng::ranges_t const& selections, snippet_controller_t& snippets)
 	{
+		bool smartTabEnabled = selections.size() == 1 && !selections.last().columnar;
+
 		std::string estimatedIndent = NULL_STR;
 		std::multimap<range_t, std::string> insertions;
 		citerate(range, dissect_columnar(buffer, selections))
@@ -1173,12 +1213,7 @@ namespace ng
 			size_t const firstLine          = buffer.convert(from).line;
 			std::string const& leftOfCaret  = buffer.substr(buffer.begin(firstLine), from);
 
-			if(!text::is_blank(leftOfCaret.data(), leftOfCaret.data() + leftOfCaret.size()))
-			{
-				size_t col = visual_distance(buffer, buffer.begin(firstLine), from);
-				insertions.insert(std::make_pair(*range, buffer.indent().create(col)));
-			}
-			else
+			if(smartTabEnabled && text::is_blank(leftOfCaret.data(), leftOfCaret.data() + leftOfCaret.size()))
 			{
 				size_t to = range->max().index;
 
@@ -1187,10 +1222,10 @@ namespace ng
 					size_t const lastLine           = buffer.convert(to).line;
 					std::string const& rightOfCaret = buffer.substr(to, buffer.end(lastLine));
 
-					indent::fsm_t fsm       = indent::create_fsm(buffer, indent::patterns_for_scope(buffer.scope(from)), firstLine, buffer.indent().indent_size(), buffer.indent().tab_size());
+					indent::fsm_t fsm       = indent::create_fsm(buffer, firstLine, buffer.indent().indent_size(), buffer.indent().tab_size());
 					std::string const& line = leftOfCaret + rightOfCaret;
 					size_t existingIndent   = indent::leading_whitespace(line.data(), line.data() + line.size(), buffer.indent().tab_size());
-					size_t newIndent        = std::max(fsm.scan_line(line), existingIndent + buffer.indent().indent_size());
+					size_t newIndent        = std::max(fsm.scan_line(line, indent::patterns_for_line(buffer, firstLine)), existingIndent + buffer.indent().indent_size());
 
 					estimatedIndent = indent::create(newIndent - indent::leading_whitespace(leftOfCaret.data(), leftOfCaret.data() + leftOfCaret.size(), buffer.indent().tab_size()), buffer.indent().tab_size(), buffer.indent().soft_tabs());
 				}
@@ -1198,7 +1233,12 @@ namespace ng
 				while(to != buffer.size() && text::is_whitespace(buffer[to]))
 					to += buffer[to].size();
 
-				insertions.insert(std::make_pair(ng::range_t(from, to), estimatedIndent));
+				insertions.emplace(ng::range_t(from, to), estimatedIndent);
+			}
+			else
+			{
+				size_t col = visual_distance(buffer, buffer.begin(firstLine), from);
+				insertions.emplace(*range, buffer.indent().create(col));
 			}
 		}
 		return ng::move(buffer, replace_helper(buffer, snippets, insertions), kSelectionMoveToEndOfSelection);
@@ -1209,30 +1249,31 @@ namespace ng
 		std::multimap<range_t, std::string> insertions;
 		citerate(range, dissect_columnar(buffer, selections))
 		{
-			size_t const from               = range->min().index;
-			size_t const firstLine          = buffer.convert(from).line;
-			std::string const& leftOfCaret  = buffer.substr(buffer.begin(firstLine), from);
+			size_t const from              = range->min().index;
+			size_t const firstLine         = buffer.convert(from).line;
+			std::string const& leftOfCaret = buffer.substr(buffer.begin(firstLine), from);
+			auto const patterns            = indent::patterns_for_line(buffer, firstLine);
 
 			size_t to                       = range->max().index;
 			size_t const lastLine           = buffer.convert(to).line;
 			std::string const& rightOfCaret = buffer.substr(to, buffer.end(lastLine));
 
-			indent::fsm_t fsm(indent::patterns_for_scope(buffer.scope(from)), buffer.indent().indent_size(), buffer.indent().tab_size());
-			if(!fsm.is_seeded(leftOfCaret))
+			indent::fsm_t fsm(buffer.indent().indent_size(), buffer.indent().tab_size());
+			if(!fsm.is_seeded(leftOfCaret, patterns))
 			{
 				size_t n = firstLine;
-				while(n > 0 && !fsm.is_seeded(indent::line(buffer, --n)))
+				while(n-- > 0 && !fsm.is_seeded(indent::line(buffer, n), indent::patterns_for_line(buffer, n)))
 					continue;
 			}
 
 			size_t existingIndent = indent::leading_whitespace(rightOfCaret.data(), rightOfCaret.data() + rightOfCaret.size(), buffer.indent().tab_size());
-			size_t newIndent      = fsm.scan_line(rightOfCaret);
+			size_t newIndent      = fsm.scan_line(rightOfCaret, patterns);
 
 			if(text::is_blank(leftOfCaret.data(), leftOfCaret.data() + leftOfCaret.size()))
 					newIndent = indent::leading_whitespace(leftOfCaret.data(), leftOfCaret.data() + leftOfCaret.size(), buffer.indent().tab_size()) + existingIndent;
 			else	existingIndent = 0;
 
-			insertions.insert(std::make_pair(*range, existingIndent < newIndent ? "\n" + indent::create(newIndent - existingIndent, buffer.indent().tab_size(), buffer.indent().soft_tabs()) : "\n"));
+			insertions.emplace(*range, existingIndent < newIndent ? "\n" + indent::create(newIndent - existingIndent, buffer.indent().tab_size(), buffer.indent().soft_tabs()) : "\n");
 		}
 		return ng::move(buffer, replace_helper(buffer, snippets, insertions), kSelectionMoveToEndOfSelection);
 	}
@@ -1246,9 +1287,9 @@ namespace ng
 			range_t r = *range + adjustment;
 			std::string const& str = _buffer.substr(r.min().index, r.max().index);
 			std::multimap<range_t, std::string> replacements;
-			replacements.insert(std::make_pair(r, ""));
+			replacements.emplace(r, "");
 			ranges_t res = this->replace(replacements);
-			clips.insert(std::make_pair(res.first().first.index, str));
+			clips.emplace(res.first().first.index, str);
 			adjustment -= str.size();
 		}
 
@@ -1261,21 +1302,23 @@ namespace ng
 
 			line = oak::cap(0, line + deltaY, int(_buffer.lines()-1));
 			col  = std::max(col + deltaX, 0);
-			replacements.insert(std::make_pair(visual_advance(_buffer, _buffer.begin(line), col, false), pair->second));
+			replacements.emplace(visual_advance(_buffer, _buffer.begin(line), col, false), pair->second);
 		}
 		_selections = this->replace(replacements, true);
 	}
 
-	bool editor_t::handle_result (std::string const& out, output::type placement, output_format::type format, output_caret::type outputCaret, text::range_t input_range, std::map<std::string, std::string> environment)
+	bool editor_t::handle_result (std::string const& uncheckedOut, output::type placement, output_format::type format, output_caret::type outputCaret, ng::range_t input_range, std::map<std::string, std::string> environment)
 	{
+		std::string const& out = utf8::is_valid(uncheckedOut.begin(), uncheckedOut.end()) ? uncheckedOut : sanitized_utf8(uncheckedOut);
+
 		range_t range;
 		switch(placement)
 		{
-			case output::replace_input:     range = range_t(_buffer.convert(input_range.min()), _buffer.convert(input_range.max())); break;
-			case output::replace_document:  range = range_t(0, _buffer.size());                  break;
-			case output::at_caret:          range = _selections.last().last;                    break;
-			case output::after_input:       range = range_t(_buffer.convert(input_range.max())); break;
-			case output::replace_selection: range = _selections.last();                              break;
+			case output::replace_input:     range = input_range;                break;
+			case output::replace_document:  range = range_t(0, _buffer.size()); break;
+			case output::at_caret:          range = _selections.last().last;    break;
+			case output::after_input:       range = input_range.max();          break;
+			case output::replace_selection: range = _selections.last();         break;
 		}
 
 		size_t caret = _selections.last().last.index;
@@ -1294,18 +1337,39 @@ namespace ng
 		switch(format)
 		{
 			case output_format::snippet:
+			case output_format::snippet_no_auto_indent:
 			{
 				if(range)
 					_selections = range;
-				snippet(out, environment);
+				snippet(out, environment, format == output_format::snippet_no_auto_indent);
 			}
 			break;
 
 			case output_format::text:
 			{
-				if(range)
-					_selections = range;
-				insert(out);
+				size_t bol = 0, eol = out.find('\n');
+				if(placement == output::replace_input && range.columnar && eol != std::string::npos)
+				{
+					std::multimap<range_t, std::string> replacements;
+					for(auto const& r : dissect_columnar(_buffer, range))
+					{
+						replacements.emplace(r, out.substr(bol == std::string::npos ? out.size() : bol, eol == std::string::npos ? eol : eol - bol));
+						bol = eol == std::string::npos ? eol : eol + 1;
+						eol = bol == std::string::npos ? bol : out.find('\n', bol);
+					}
+
+					_selections = replace_helper(_buffer, _snippets, replacements);
+					if(outputCaret != output_caret::select_output)
+						_selections = ng::move(_buffer, _selections, kSelectionMoveToEndOfSelection);
+				}
+				else
+				{
+					if(range)
+						_selections = range;
+
+					insert(out, outputCaret == output_caret::select_output);
+				}
+
 				if(range && outputCaret == output_caret::interpolate_by_char)
 				{
 					offset = utf8::find_safe_end(out.begin(), out.begin() + std::min(offset, out.size())) - out.begin();
@@ -1349,16 +1413,16 @@ namespace ng
 		return ng::scope(_buffer, _selections, scopeAttributes);
 	}
 
-	std::map<std::string, std::string> editor_t::variables (std::map<std::string, std::string> map, std::string const& scopeAttributes) const
+	std::map<std::string, std::string> editor_t::editor_variables (std::string const& scopeAttributes) const
 	{
-		if(_document)
-				map = _document->variables(map);
-		else	map = variables_for_path(NULL_STR, "", map);
+		std::map<std::string, std::string> map = {
+			{ "TM_TAB_SIZE",  std::to_string(_buffer.indent().tab_size()) },
+			{ "TM_SOFT_TABS", _buffer.indent().soft_tabs() ? "YES" : "NO" },
+			{ "TM_SELECTION", to_s(_buffer, _selections)                  },
+		};
 
-		map.insert(std::make_pair("TM_TAB_SIZE", text::format("%zu", _buffer.indent().tab_size())));
-		if(_buffer.indent().soft_tabs())
-			map.insert(std::make_pair("TM_SOFT_TABS", "YES"));
-		map.insert(std::make_pair("TM_SELECTION", to_s(_buffer, _selections)));
+		scope::context_t const& s = scope(scopeAttributes);
+		map.emplace("TM_SCOPE", to_s(s.right));
 
 		if(_selections.size() == 1)
 		{
@@ -1368,15 +1432,15 @@ namespace ng
 				size_t const caret = range.last.index;
 				text::pos_t const& pos = _buffer.convert(caret);
 
-				map.insert(std::make_pair("TM_LINE_INDEX",    text::format("%zu", pos.column)));
-				map.insert(std::make_pair("TM_LINE_NUMBER",   text::format("%zu", pos.line+1)));
-				map.insert(std::make_pair("TM_COLUMN_NUMBER", text::format("%zu", visual_distance(_buffer, _buffer.begin(pos.line), caret)+1)));
+				map.emplace("TM_LINE_INDEX",    std::to_string(pos.column));
+				map.emplace("TM_LINE_NUMBER",   std::to_string(pos.line+1));
+				map.emplace("TM_COLUMN_NUMBER", std::to_string(visual_distance(_buffer, _buffer.begin(pos.line), caret)+1));
 
 				range_t wordRange = ng::extend(_buffer, _selections, kSelectionExtendToWord).last();
-				map.insert(std::make_pair("TM_CURRENT_WORD",  _buffer.substr(wordRange.min().index, wordRange.max().index)));
-				map.insert(std::make_pair("TM_CURRENT_LINE",  _buffer.substr(_buffer.begin(pos.line), _buffer.eol(pos.line))));
+				map.emplace("TM_CURRENT_WORD",  _buffer.substr(wordRange.min().index, wordRange.max().index));
+				map.emplace("TM_CURRENT_LINE",  _buffer.substr(_buffer.begin(pos.line), _buffer.eol(pos.line)));
 
-				map.insert(std::make_pair("TM_SCOPE_LEFT",    to_s(_buffer.scope(caret).left)));
+				map.emplace("TM_SCOPE_LEFT",    to_s(s.left));
 			}
 			else
 			{
@@ -1394,14 +1458,11 @@ namespace ng
 				}
 				else
 				{
-					map.insert(std::make_pair("TM_SELECTED_TEXT", text::format("Error: Selection exceeds %s. Command should read selection from stdin.", text::format_size(ARG_MAX-32).c_str())));
+					map.emplace("TM_SELECTED_TEXT", text::format("Error: Selection exceeds %s. Command should read selection from stdin.", text::format_size(ARG_MAX-32).c_str()));
 				}
 			}
 		}
-
-		scope::context_t const& s = scope(scopeAttributes);
-		map.insert(std::make_pair("TM_SCOPE", to_s(s.right)));
-		return bundles::environment(s, map);
+		return map;
 	}
 
 	// ========
@@ -1433,7 +1494,7 @@ namespace ng
 			_selections = res;
 	}
 
-	ranges_t editor_t::replace (std::string const& searchFor, std::string const& replaceWith, find::options_t options, bool searchOnlySelection)
+	ranges_t editor_t::replace_all (std::string const& searchFor, std::string const& replaceWith, find::options_t options, bool searchOnlySelection)
 	{
 		ranges_t res;
 		if(options & find::all_matches)
@@ -1441,12 +1502,9 @@ namespace ng
 			preserve_selection_helper_t helper(_buffer, _selections);
 			std::multimap<range_t, std::string> replacements;
 			citerate(pair, ng::find_all(_buffer, searchFor, options, searchOnlySelection ? _selections : ranges_t()))
-				replacements.insert(std::make_pair(pair->first, options & find::regular_expression ? format_string::expand(replaceWith, pair->second) : replaceWith));
+				replacements.emplace(pair->first, options & find::regular_expression ? format_string::expand(replaceWith, pair->second) : replaceWith);
 			res = this->replace(replacements, true);
 			_selections = helper.get(false);
-		}
-		else
-		{
 		}
 		return res;
 	}

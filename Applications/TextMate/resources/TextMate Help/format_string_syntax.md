@@ -1,3 +1,5 @@
+title: Format string syntax
+
 # Format String Syntax
 
 ## In Snippets
@@ -8,7 +10,7 @@
 	${«int»}
 	${«int»:«snippet»}
 	${«int»/«regexp»/«format»/«options»}
-	${«int»|«choice 1»,…,«choice n»|}     # parsed but not handled
+	${«int»|«choice 1»,…,«choice n»|}
 
 ### Code
 

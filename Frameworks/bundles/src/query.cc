@@ -13,6 +13,11 @@ namespace bundles
 	void add_callback (callback_t* cb)    { Callbacks.add(cb); }
 	void remove_callback (callback_t* cb) { Callbacks.remove(cb); }
 
+	static bool deleted_or_disabled (item_ptr item)
+	{
+		return item->deleted() || item->disabled() || item->bundle() && (item->bundle()->deleted() || item->bundle()->disabled());
+	}
+
 	namespace
 	{
 		struct cache_t
@@ -26,10 +31,10 @@ namespace bundles
 				std::multimap<std::string, item_ptr>& res = _cache[field];
 				iterate(item, AllItems)
 				{
-					if((*item)->disabled() || (*item)->bundle() && (*item)->bundle()->disabled() || (*item)->deleted() || (*item)->bundle() && (*item)->bundle()->deleted())
+					if(deleted_or_disabled(*item))
 						continue;
 					citerate(value, (*item)->values_for_field(field))
-						res.insert(std::make_pair(*value, *item));
+						res.emplace(*value, *item);
 				}
 				return res;
 			}
@@ -42,7 +47,7 @@ namespace bundles
 					iterate(item, AllItems)
 					{
 						if((*item)->bundle())
-							map[(*item)->bundle()].insert(std::make_pair((*item)->uuid(), *item));
+							map[(*item)->bundle()].emplace((*item)->uuid(), *item);
 					}
 
 					iterate(bundle, map)
@@ -55,7 +60,7 @@ namespace bundles
 						{
 							item_ptr item = pair->second;
 							if((item->kind() & kItemTypeMenuTypes) && !item->hidden_from_user() && didInclude.find(item) == didInclude.end())
-								leftOut.insert(std::make_pair(item->name(), item));
+								leftOut.emplace(item->name(), item);
 						}
 
 						if(!leftOut.empty())
@@ -68,8 +73,14 @@ namespace bundles
 				return menu != _menus.end() ? menu->second : kEmptyMenu;
 			}
 
+			std::recursive_mutex& mutex ()
+			{
+				return _cache_mutex;
+			}
+
 			void clear ()
 			{
+				std::lock_guard<std::recursive_mutex> lock(_cache_mutex);
 				_cache.clear();
 				_menus.clear();
 			}
@@ -101,6 +112,7 @@ namespace bundles
 				}
 			}
 
+			std::recursive_mutex _cache_mutex;
 			std::map< std::string, std::multimap<std::string, item_ptr> > _cache;
 			std::map< oak::uuid_t, std::vector<item_ptr> > _menus;
 		};
@@ -142,7 +154,7 @@ namespace bundles
 		iterate(item, items)
 		{
 			if((*item)->bundle())
-				map[(*item)->bundle()].insert(std::make_pair((*item)->uuid(), *item));
+				map[(*item)->bundle()].emplace((*item)->uuid(), *item);
 		}
 
 		iterate(bundle, map)
@@ -202,6 +214,7 @@ namespace bundles
 
  	static void cache_search (std::string const& field, std::string const& value, scope::context_t const& scope, int kind, oak::uuid_t const& bundle, bool includeDisabledItems, std::multimap<double, item_ptr>& ordered)
 	{
+		std::lock_guard<std::recursive_mutex> lock(cache().mutex());
 		std::multimap<std::string, item_ptr> const& values = cache().fetch(field);
 		foreach(pair, values.lower_bound(value), field == kFieldSemanticClass ? values.lower_bound(value + "/") : values.upper_bound(value)) // Since kFieldSemanticClass is a prefix match we want lower bound of the first item after the last possible prefix (which would be “value.zzzzz…” → “value/”).
 		{
@@ -210,7 +223,7 @@ namespace bundles
 			{
 				if(pair->second->kind() == kItemTypeProxy)
 						resolve_proxy(pair->second, scope, kind, bundle, includeDisabledItems, ordered);
-				else	ordered.insert(std::make_pair(rank, pair->second));
+				else	ordered.emplace(rank, pair->second);
 			}
 		}
 	}
@@ -219,7 +232,7 @@ namespace bundles
 	{
 		iterate(item, AllItems)
 		{
-			if(!includeDisabledItems && ((*item)->disabled() || (*item)->bundle() && (*item)->bundle()->disabled()) || (*item)->deleted() || (*item)->bundle() && (*item)->bundle()->deleted())
+			if(!includeDisabledItems && deleted_or_disabled(*item))
 				continue;
 
 			double rank = 1.0;
@@ -227,15 +240,15 @@ namespace bundles
 			{
 				if((*item)->kind() == kItemTypeProxy)
 						resolve_proxy(*item, scope, kind, bundle, includeDisabledItems, ordered);
-				else	ordered.insert(std::make_pair(rank, *item));
+				else	ordered.emplace(rank, *item);
 			}
 		}
 	}
 
  	static void search (std::string const& field, std::string const& value, scope::context_t const& scope, int kind, oak::uuid_t const& bundle, bool includeDisabledItems, std::multimap<double, item_ptr>& ordered)
 	{
-		static std::set<std::string> CachedFields = { kFieldKeyEquivalent, kFieldTabTrigger, kFieldSemanticClass, kFieldGrammarScope, kFieldSettingName };
-		if(!includeDisabledItems && !bundle && CachedFields.find(field) != CachedFields.end())
+		static auto const CachedFields = new std::set<std::string>{ kFieldKeyEquivalent, kFieldTabTrigger, kFieldSemanticClass, kFieldGrammarScope, kFieldSettingName };
+		if(!includeDisabledItems && !bundle && CachedFields->find(field) != CachedFields->end())
 				cache_search(field, value, scope, kind, bundle, includeDisabledItems, ordered);
 		else	linear_search(field, value, scope, kind, bundle, includeDisabledItems, ordered);
 	}
@@ -278,10 +291,11 @@ namespace bundles
 
 	std::vector<item_ptr> item_t::menu (bool includeDisabledItems) const
 	{
+		std::lock_guard<std::recursive_mutex> lock(cache().mutex());
 		std::vector<item_ptr> res;
 		iterate(item, cache().menu(_uuid))
 		{
-			if(!includeDisabledItems && ((*item)->disabled() || (*item)->bundle() && (*item)->bundle()->disabled()) || (*item)->deleted() || (*item)->bundle() && (*item)->bundle()->deleted())
+			if(!includeDisabledItems && deleted_or_disabled(*item))
 				continue;
 			res.push_back(*item);
 		}

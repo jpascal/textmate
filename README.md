@@ -1,20 +1,22 @@
 # TextMate
 
-This repository contains the source code for TextMate 2, a text editor for OS X 10.7+.
+## Download
+
+You can [download TextMate from here](http://macromates.com/download).
+
+## Feedback
+
+You can use [the TextMate mailing list](http://lists.macromates.com/listinfo/textmate) or [#textmate][] IRC channel on [freenode.net][] for questions, comments, and bug reports.
+
+You can also [contact MacroMates](http://macromates.com/contact).
+
+Before you submit a bug report please read the [writing bug reports](http://kb.textmate.org/writing_bug_reports) instructions.
+
+## Screenshot
 
 ![textmate](https://raw.github.com/textmate/textmate/gh-pages/images/screenshot.png)
 
 # Building
-
-## Important
-
-If you just want to run TextMate 2 then use [this link to download a prebuilt binary][prebuilt binary]. For 10.6 support you can try a [10.6 build][] (from the [10.6 fork][]) but it comes with no guarantee of actually working!
-
-If you have problems building please **don’t** open an issue! Instead write the [textmate-dev][] mailing list or use the [#textmate][] IRC channel on [freenode.net][] where people might be able to help you.
-
-[prebuilt binary]: https://github.com/textmate/textmate/downloads
-[10.6 build]: https://github.com/nanoant/textmate/downloads
-[10.6 fork]: https://github.com/nanoant/textmate/tree/10.6_32bit
 
 ## Bootstrap
 
@@ -23,6 +25,7 @@ To bootstrap the build you need to run `./configure` (in the root of the source 
 * `builddir` — location of built files. Defaults to `~/build/TextMate`.
 * `identity` — for Apple’s `codesign`. Defaults to ad-hoc signing, which does not use an identity at all.
 * `boostdir` — location of boost includes. By default it will search various locations including MacPorts and Homebrew.
+* `CC` and `CXX` — C and C++ compiler.
 
 In the simplest case you would run:
 
@@ -42,8 +45,9 @@ To build the source the following must first be installed on your system:
  * [boost][]         — portable C++ source libraries
  * [multimarkdown][] — marked-up plain text compiler
  * [mercurial][]     — distributed SCM system
+ * [Cap’n Proto][capnp] — serialization library
 
-To install using [MacPorts][] run:
+You need to manually install [Cap’n Proto][capnp] if you're not using [homebrew][]. To install the other dependencies via [MacPorts][] run:
 
 	sudo port install ninja ragel boost multimarkdown mercurial
 
@@ -51,9 +55,9 @@ If `port` fails with a build error then likely you need to agree (system-wide) t
 
 	sudo xcodebuild -license
 
-You can also install the above using [homebrew][]:
+To install using [homebrew][] run:
 
-	brew install ragel boost multimarkdown hg ninja
+	brew install ragel boost multimarkdown hg ninja capnp
 
 In practice `hg` ([mercurial][]) is only required for the SCM library’s tests so you can skip this dependency if you don’t mind a failing test.
 
@@ -66,16 +70,6 @@ If you are on OS X 10.7 you need `pgrep` and `pkill` (used by the “relaunch”
 Or using [homebrew][]:
 
 	brew install proctools
-
-### Clang 3.2 / 4.0
-
-You also need a recent version of clang. This should be included with Xcode 4.4+ available for both Lion and Mountain Lion.
-
-If you have multiple versions of Xcode installed, be sure to run `sudo xcode-select -switch` so that `./configure` finds the most recent.
-
-We also require the [libc++][] library, so while you can install clang from MacPorts or Homebrew, you’d need to also install this library (or make it use the one from Xcode).
-
-[libc++]: http://libcxx.llvm.org/
 
 ## Building from within TextMate
 
@@ -123,92 +117,24 @@ To clean everything run:
 
 	ninja -t clean
 
-# Contributing
-
-You can send pull requests via GitHub. Patches should:
-
-1. Follow the style of the existing code.
-2. One commit should do exactly one thing.
-3. Commit messages should start with a summary line below 80 characters followed by a blank line, and then the reasoning/analysis for why the change was made (if appropriate).
-4. Commits that fix a bug in a previous commit (which has already been merged) should start with `fixup!` and then the summary line of the commit it fixes. If you are writing your commit message in TextMate then type `fix⇥` to get the prefix and a menu allowing you to pick the summary line from one of the last 15 commits.
-5. Rebase your branch against the upstream’s master. We don’t want to pull redundant merge commits.
-6. **Be clear about what license applies to your patch:** The files within this repository are under the [GPL 3][] (or later) but (as the original creator) we are still allowed to create non-free derivatives. However, if patches are given to us under GPL then those cannot make it into any non-free derivatives we may later wish to create. So to make it easier for us (and avoid any legal issues) we prefer if patches are released as public domain.
-
-There is both the [textmate-dev][] mailing list and [#textmate][] IRC channel at [freenode.net][] where this project can be discussed.
-
-## GitHub Workflow
-
-Developing patches should follow this workflow:
-
-### Initial Setup
-
-1.	Fork on GitHub (click Fork button)
-2.	Clone to computer: `git clone git@github.com:«github account»/textmate.git`
-3.	cd into your repo: `cd textmate`
-4.	Set up remote upstream: `git remote add -f upstream git://github.com/textmate/textmate.git`
-
-### Adding a Feature
-
-1.	Create a branch for the new feature: `git checkout -b my_new_feature`
-2.	Work on your feature, add and commit as usual
-
-Creating a branch is not strictly necessary, but it makes it easy to delete your branch when the feature has been merged into upstream, diff your branch with the version that actually ended in upstream, and to submit pull requests for multiple features (branches).
-
-### Pushing to GitHub
-
-8.	Push branch to GitHub: `git push origin my_new_feature`
-9.	Issue pull request: Click Pull Request button on GitHub
-
-### Useful Commands
-
-If a lot of changes has happened upstream you can replay your local changes on top of these, this is done with `rebase`, e.g.:
-
-	git fetch upstream
-	git rebase upstream/master
-
-This will fetch changes and re-apply your commits on top of these.
-
-This is generally better than merge, as it will give a clear picture of which commits are local to your branch. It will also “prune” any of your local commits if the same changes have been applied upstream.
-
-You can use `-i` with `rebase` for an “interactive” rebase. This allows you to drop, re-arrange, merge, and reword commits, e.g.:
-
-	git rebase -i upstream/master
-
-## Changing a xib File
-
-When you change a `xib` file then please look at the diff before you push. If the diff seems to have a lot of changes unrelated to what actually did change, please revert back to `HEAD` and open the pristine `xib` in Xcode and save that (without changing anything).
-
-Commit this saved `xib` with a commit message of `Save xib file with Xcode «version»`. Here version is the version of Xcode you are using, but be sure you don’t downgrade the format. To check the version that `resources/English.lproj/MainMenu.xib` was last saved with, you can run (add appropriate grep if desired):
-
-	git log --oneline resources/English.lproj/MainMenu.xib
-
-You can safely assume that all `xib` files without such message are saved with Xcode 4.4 or earlier (i.e. you won’t downgrade them).
-
-After this, re-apply your change and commit. If the change is non-trivial it is a good idea to write how you made the change in the commit body. E.g. a commit message could be:
-
-	Disable install button when we can’t install
-	
-	The install button’s “enabled” property
-	has been bound to the “canInstall”
-	property of File’s Owner.
-
 # Legal
 
 The source for TextMate is released under the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
 
 TextMate is a trademark of Allan Odgaard.
 
+[![Bitdeli Badge](https://d2weczhvl823v0.cloudfront.net/sorbits/textmate/trend.png)](https://bitdeli.com/free "Bitdeli Badge")
+
 [boost]:         http://www.boost.org/
 [ninja]:         http://martine.github.com/ninja/
 [multimarkdown]: http://fletcherpenney.net/multimarkdown/
 [ragel]:         http://www.complang.org/ragel/
 [mercurial]:     http://mercurial.selenic.com/
+[capnp]:         http://kentonv.github.io/capnproto/
 [clang 3.2]:     http://clang.llvm.org/
 [MacPorts]:      http://www.macports.org/
-[homebrew]:      http://mxcl.github.com/homebrew/
+[homebrew]:      http://brew.sh/
 [NinjaBundle]:   https://github.com/textmate/ninja.tmbundle
 [CxxTest]:       https://github.com/textmate/cxxtest.tmbundle
-[GPL 3]:         http://www.gnu.org/copyleft/gpl.html
-[textmate-dev]:  http://lists.macromates.com/listinfo/textmate-dev
 [#textmate]:     irc://irc.freenode.net/#textmate
 [freenode.net]:  http://freenode.net/

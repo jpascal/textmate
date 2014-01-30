@@ -29,11 +29,7 @@ enum action_t { kActionNop, kActionTab, kActionReturn, kActionCancel, kActionMov
 - (void)dealloc
 {
 	[[NSNotificationCenter defaultCenter] removeObserver:self];
-
-	[tableView release];
-	self.window  = nil;
-	self.choices = nil;
-	[super dealloc];
+	self.window = nil;
 }
 
 - (void)sizeToFit
@@ -60,8 +56,7 @@ enum action_t { kActionNop, kActionTab, kActionReturn, kActionCancel, kActionMov
 		return;
 
 	[[window parentWindow] removeChildWindow:window];
-	[window release];
-	window = [aWindow retain];
+	window = aWindow;
 }
 
 - (void)viewBoundsDidChange:(NSNotification*)aNotification
@@ -82,8 +77,7 @@ enum action_t { kActionNop, kActionTab, kActionReturn, kActionCancel, kActionMov
 
 	id oldSelection = self.selectedChoice;
 	self.choiceIndex = NSNotFound;
-	[choices autorelease];
-	choices = [newChoices retain];
+	choices = newChoices;
 	[tableView reloadData];
 	self.choiceIndex = [choices indexOfObject:oldSelection];
 
@@ -126,11 +120,10 @@ enum action_t { kActionNop, kActionTab, kActionReturn, kActionCancel, kActionMov
 	window.backgroundColor    = [NSColor colorWithCalibratedRed:1.0 green:0.96 blue:0.76 alpha:1.0];
 	window.hasShadow          = YES;
 	window.level              = NSStatusWindowLevel;
-	window.hidesOnDeactivate  = YES;
 	window.ignoresMouseEvents = YES;
 
 	tableView = [[NSTableView alloc] initWithFrame:NSZeroRect];
-	[tableView addTableColumn:[[[NSTableColumn alloc] initWithIdentifier:@"mainColumn"] autorelease]];
+	[tableView addTableColumn:[[NSTableColumn alloc] initWithIdentifier:@"mainColumn"]];
 	tableView.headerView                         = nil;
 	tableView.focusRingType                      = NSFocusRingTypeNone;
 	tableView.autoresizingMask                   = NSViewWidthSizable|NSViewHeightSizable;
@@ -140,7 +133,7 @@ enum action_t { kActionNop, kActionTab, kActionReturn, kActionCancel, kActionMov
 	// tableView.delegate                           = self;
 	[tableView reloadData];
 
-	NSScrollView* scrollView         = [[[NSScrollView alloc] initWithFrame:NSZeroRect] autorelease];
+	NSScrollView* scrollView         = [[NSScrollView alloc] initWithFrame:NSZeroRect];
 	scrollView.hasVerticalScroller   = YES;
 	scrollView.hasHorizontalScroller = NO;
 	scrollView.autohidesScrollers    = YES;
@@ -203,7 +196,7 @@ enum action_t { kActionNop, kActionTab, kActionReturn, kActionCancel, kActionMov
 - (void)doCommandBySelector:(SEL)aSelector
 {
 	if([self respondsToSelector:aSelector])
-		[self performSelector:aSelector withObject:self];
+		[super doCommandBySelector:aSelector];
 }
 
 - (void)insertText:(id)aString                 { }

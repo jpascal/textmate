@@ -1,5 +1,6 @@
 #include "transform.h"
 #include "indent.h"
+#include <regexp/regexp.h>
 #include <regexp/format_string.h>
 #include <oak/oak.h>
 #include <oak/server.h>
@@ -70,6 +71,10 @@ namespace transform
 		std::string res("");
 		if(v.size() == 1 || (v.size() == 2 && v.back().first == v.back().second))
 		{
+			static regexp::pattern_t pattern("\\A(?'open'[({\\[])?(?:(?'lhs'\\w+)(?'op'\\W+)(?'rhs'\\w+)|(?'lhs'[^,\\s]+?)(?'op'\\s*,\\s*)(?'rhs'[^,\\s]+?)|(?'lhs'[^:\\s]+?)(?'op'\\s*:\\s*)(?'rhs'[^:\\s]+?)|(?'lhs'[^<>!=\\s]+?)(?'op'\\s*[<>!=]\\s*)(?'rhs'[^<>!=\\s]+?))(?(<open>)(?'close'[\\]})]))\\z");
+			if(regexp::match_t const& m = regexp::search(pattern, src))
+				return format_string::expand("${open}${rhs}${op}${lhs}${close}", m.captures());
+
 			std::deque<char> tmp;
 			citerate(it, diacritics::make_range(src.data(), src.data() + src.size() - (hasNewline ? 1 : 0)))
 				tmp.insert(tmp.begin(), &it, &it + it.length());
@@ -116,17 +121,14 @@ namespace transform
 			char const* from = it->first;
 			char const* to   = it->second;
 
-			if(!text::is_blank(from, to))
+			if(amount > 0 && !text::is_blank(from, to))
 			{
-				if(amount > 0)
-				{
-					res += indent::create(amount, indent.tab_size(), indent.soft_tabs());
-				}
-				else if(amount < 0)
-				{
-					for(int col = 0; from != to && col < -amount && text::is_space(*from); ++from)
-						col += *from == '\t' ? indent.tab_size() - (col % indent.tab_size()) : 1;
-				}
+				res += indent::create(amount, indent.tab_size(), indent.soft_tabs());
+			}
+			else if(amount < 0)
+			{
+				for(int col = 0; from != to && col < -amount && text::is_space(*from); ++from)
+					col += *from == '\t' ? indent.tab_size() - (col % indent.tab_size()) : 1;
 			}
 
 			std::copy(from, to, back_inserter(res));
@@ -136,8 +138,8 @@ namespace transform
 
 	static std::string fill_string (std::string const& src)
 	{
-		if(regexp::match_t const& m = regexp::search("\\A( *([*o•·-]) (?=\\S)|\\s{2,})", src.data(), src.data() + src.size()))
-			return format_string::replace(src.substr(0, m.end()), "\\S", " ");
+		if(regexp::match_t const& m = regexp::search("\\A( *([*o•·-]) (?=\\S)|\\s{2,})", src))
+			return format_string::replace(m[0], "\\S", " ");
 		return "";
 	}
 
@@ -177,7 +179,7 @@ namespace transform
 			std::string const str = std::string(it->first, it->second);
 			citerate(offset, text::soft_breaks(str, wrap, tabSize))
 			{
-				res += justify_line(unwrapped.substr(from, length_excl_whitespace(str, from, *offset)), wrap, tabSize);
+				res += justify_line(str.substr(from, length_excl_whitespace(str, from, *offset)), wrap, tabSize);
 				res += "\n";
 				from = *offset;
 			}

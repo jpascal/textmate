@@ -1,5 +1,7 @@
 #import "HTMLOutputWindow.h"
 #import <OakAppKit/OakWindowFrameHelper.h>
+#import <OakFoundation/NSString Additions.h>
+#import <OakSystem/process.h>
 #import <command/runner.h>
 #import <oak/debug.h>
 
@@ -8,29 +10,32 @@ OAK_DEBUG_VAR(HTMLOutputWindow);
 static std::multimap<oak::uuid_t, HTMLOutputWindowController*> Windows;
 
 @interface HTMLOutputWindowController ()
-@property (nonatomic, retain) NSWindow* window;
+{
+	OBJC_WATCH_LEAKS(HTMLOutputWindowController);
+	command::runner_ptr runner;
+}
 @property (nonatomic, retain) OakHTMLOutputView* htmlOutputView;
 @property (nonatomic, readonly) BOOL running;
 @end
 
 @implementation HTMLOutputWindowController
-{
-	command::runner_ptr runner;
-}
-
 - (id)initWithRunner:(command::runner_ptr const&)aRunner
 {
+	D(DBF_HTMLOutputWindow, bug("\n"););
 	if(self = [super init])
 	{
 		self.window         = [[NSWindow alloc] initWithContentRect:NSMakeRect(100, 100, 100, 100) styleMask:(NSTitledWindowMask|NSClosableWindowMask|NSResizableWindowMask|NSMiniaturizableWindowMask) backing:NSBackingStoreBuffered defer:NO];
 		self.htmlOutputView = [[OakHTMLOutputView alloc] init];
 
 		[self.window setFrameAutosaveName:@"Command Output (HTML)"];
-		[self.window bind:@"title" toObject:self.htmlOutputView.webView withKeyPath:@"mainFrameTitle" options:nil];
-		[self.window bind:@"documentEdited" toObject:self.htmlOutputView withKeyPath:@"runningCommand" options:nil];
+		[self.window bind:NSTitleBinding toObject:self.htmlOutputView.webView withKeyPath:@"mainFrameTitle" options:nil];
+		[self.window bind:NSDocumentEditedBinding toObject:self.htmlOutputView withKeyPath:@"runningCommand" options:nil];
 		[self.window setContentView:self.htmlOutputView];
 		[self.window setDelegate:self];
 		[self.window setReleasedWhenClosed:NO];
+		[self.window setAutorecalculatesContentBorderThickness:NO forEdge:NSMinYEdge];
+		[self.window setContentBorderThickness:25 forEdge:NSMinYEdge];
+		[self.window setCollectionBehavior:[self.window collectionBehavior] | NSWindowCollectionBehaviorMoveToActiveSpace];
 
 		[OakWindowFrameHelper windowFrameHelperWithWindow:self.window];
 
@@ -41,18 +46,25 @@ static std::multimap<oak::uuid_t, HTMLOutputWindowController*> Windows;
 
 + (HTMLOutputWindowController*)HTMLOutputWindowWithRunner:(command::runner_ptr const&)aRunner
 {
+	D(DBF_HTMLOutputWindow, bug("%s\n", to_s(aRunner->uuid()).c_str()););
 	foreach(it, Windows.lower_bound(aRunner->uuid()), Windows.upper_bound(aRunner->uuid()))
 	{
 		HTMLOutputWindowController* controller = it->second;
 		if(![controller running])
+		{
+			D(DBF_HTMLOutputWindow, bug("found existing controller\n"););
 			return [controller setCommandRunner:aRunner], controller;
+		}
 	}
 
 	for(NSWindow* window in [NSApp orderedWindows])
 	{
 		HTMLOutputWindowController* delegate = [window delegate];
-		if(![window isMiniaturized] && [delegate isKindOfClass:[HTMLOutputWindowController class]])
+		if(![window isMiniaturized] && [window isVisible] && [delegate isKindOfClass:[HTMLOutputWindowController class]])
+		{
+			D(DBF_HTMLOutputWindow, bug("found existing window\n"););
 			return [delegate setCommandRunner:aRunner], delegate;
+		}
 	}
 
 	return [[self alloc] initWithRunner:aRunner];
@@ -64,7 +76,9 @@ static std::multimap<oak::uuid_t, HTMLOutputWindowController*> Windows;
 		Windows.erase(runner->uuid());
 
 	runner = aRunner;
-	Windows.insert(std::make_pair(runner->uuid(), self));
+	Windows.emplace(runner->uuid(), self);
+
+	self.window.title = [NSString stringWithCxxString:runner->name()];
 
 	[self.htmlOutputView setEnvironment:runner->environment()];
 	[self.htmlOutputView loadRequest:URLRequestForCommandRunner(runner) autoScrolls:runner->auto_scroll_output()];
@@ -77,6 +91,11 @@ static std::multimap<oak::uuid_t, HTMLOutputWindowController*> Windows;
 - (BOOL)running
 {
 	return runner->running();
+}
+
+- (BOOL)needsNewWebView
+{
+	return _htmlOutputView.needsNewWebView;
 }
 
 - (void)tearDown
@@ -111,5 +130,23 @@ static std::multimap<oak::uuid_t, HTMLOutputWindowController*> Windows;
 	NSAlert* alert = [NSAlert alertWithMessageText:@"Stop task before closing?" defaultButton:@"Stop Task" alternateButton:@"Cancel" otherButton:nil informativeTextWithFormat:@"The job that the task is performing will not be completed."];
 	[alert beginSheetModalForWindow:self.window modalDelegate:self didEndSelector:@selector(closeWarningDidEnd:returnCode:contextInfo:) contextInfo:NULL];
 	return NO;
+}
+
+- (void)dealloc
+{
+	D(DBF_HTMLOutputWindow, bug("\n"););
+	self.window.delegate = nil;
+}
+
+- (IBAction)toggleHTMLOutput:(id)sender
+{
+	[self.window performClose:self];
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem*)menuItem
+{
+	if([menuItem action] == @selector(toggleHTMLOutput:))
+		[menuItem setTitle:@"Hide HTML Output"];
+	return YES;
 }
 @end

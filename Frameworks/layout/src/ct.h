@@ -21,6 +21,14 @@ namespace ng
 		mutable std::map<std::pair<double, double>, CGImageRef> _folding_dots_cache;
 	};
 
+	struct invisibles_t
+	{
+		bool enabled        = false;
+		std::string tab     = "‣";
+		std::string space   = "·";
+		std::string newline = "¬";
+	};
+
 } /* ng */
 
 namespace ct
@@ -54,7 +62,7 @@ namespace ct
 
 	struct line_t
 	{
-		line_t (std::string const& text, std::map<size_t, scope::scope_t> const& scopes, theme_ptr const& theme, std::string fontName, CGFloat fontSize, CGColorRef textColor = NULL);
+		line_t (std::string const& text, std::map<size_t, scope::scope_t> const& scopes, theme_ptr const& theme, CGColorRef textColor = NULL);
 
 		void draw_foreground (CGPoint pos, ng::context_t const& context, bool isFlipped, std::vector< std::pair<size_t, size_t> > const& misspelled) const;
 		void draw_background (CGPoint pos, CGFloat height, ng::context_t const& context, bool isFlipped, CGColorRef currentBackground) const;

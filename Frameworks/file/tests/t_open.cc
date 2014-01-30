@@ -33,7 +33,7 @@ class OpenTests : public CxxTest::TestSuite
 			_run_loop.stop();
 		}
 
-		void show_content (std::string const& path, io::bytes_ptr content, std::map<std::string, std::string> const& attributes, std::string const& fileType, std::string const& pathAttributes, encoding::type const& encoding, std::vector<oak::uuid_t> const& binaryImportFilters, std::vector<oak::uuid_t> const& textImportFilters)
+		void show_content (std::string const& path, io::bytes_ptr content, std::map<std::string, std::string> const& attributes, std::string const& fileType, encoding::type const& encoding, std::vector<oak::uuid_t> const& binaryImportFilters, std::vector<oak::uuid_t> const& textImportFilters)
 		{
 			_bom        = encoding.byte_order_mark();
 			_encoding   = encoding.charset();
@@ -127,6 +127,21 @@ public:
 	void test_file_type ()
 	{
 		test::jail_t jail;
+		path::set_content(jail.path("test.x-unknown"), "dummy");
+
+		stall_t* cb = new stall_t(NULL_STR, "x.test");
+		file::open_callback_ptr sharedPtr((file::open_callback_t*)cb);
+		file::open(jail.path("test.x-unknown"), osx::authorization_t(), sharedPtr);
+		cb->wait();
+
+		TS_ASSERT_EQUALS(cb->_error, false);
+		TS_ASSERT_EQUALS(cb->_file_type, "x.test");
+		TS_ASSERT_EQUALS(std::string(cb->_content->begin(), cb->_content->end()), "dummy");
+	}
+
+	void test_file_type_no_ext ()
+	{
+		test::jail_t jail;
 		path::set_content(jail.path("test"), "dummy");
 
 		stall_t* cb = new stall_t(NULL_STR, "x.test");
@@ -135,18 +150,18 @@ public:
 		cb->wait();
 
 		TS_ASSERT_EQUALS(cb->_error, false);
-		TS_ASSERT_EQUALS(cb->_file_type, "x.test");
+		TS_ASSERT_EQUALS(cb->_file_type, "text.plain");
 		TS_ASSERT_EQUALS(std::string(cb->_content->begin(), cb->_content->end()), "dummy");
 	}
 
 	void test_file_type_failure ()
 	{
 		test::jail_t jail;
-		path::set_content(jail.path("test"), "dummy");
+		path::set_content(jail.path("test.x-unknown"), "dummy");
 
 		stall_t* cb = new stall_t;
 		file::open_callback_ptr sharedPtr((file::open_callback_t*)cb);
-		file::open(jail.path("test"), osx::authorization_t(), sharedPtr);
+		file::open(jail.path("test.x-unknown"), osx::authorization_t(), sharedPtr);
 		cb->wait();
 
 		TS_ASSERT_EQUALS(cb->_error, true);

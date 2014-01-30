@@ -7,9 +7,9 @@ namespace oak
 {
 	struct PUBLIC application_t
 	{
-		application_t (int argc, char const* argv[]);
+		application_t (int argc, char const* argv[], bool redirectStdErr = false);
 
-		static void relaunch (bool disableUserInteraction = false);
+		static void relaunch ();
 		static std::string name ();
 		static std::string path (std::string const& relativePath = ".");
 		static void set_name (std::string const& newName);

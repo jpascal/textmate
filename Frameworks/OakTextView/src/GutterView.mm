@@ -1,9 +1,10 @@
 #import "GutterView.h"
 #import <OakAppKit/OakAppKit.h>
 #import <OakAppKit/NSImage Additions.h>
+#import <OakAppKit/NSColor Additions.h>
 #import <OakFoundation/NSString Additions.h>
-#import <ns/attr_string.h>
 #import <text/types.h>
+#import <cf/cf.h>
 #import <cf/cgrect.h>
 #import <oak/debug.h>
 #import <oak/oak.h>
@@ -20,13 +21,14 @@ struct data_source_t
 	data_source_t (std::string const& identifier, id datasource, id delegate) : identifier(identifier), datasource(datasource), delegate(delegate) { }
 
 	std::string identifier;
-	id datasource;
-	id delegate;
+	__weak id datasource;
+	__weak id delegate;
 	CGFloat x0;
 	CGFloat width;
 };
 
 @interface GutterView ()
+@property (nonatomic) NSSize size;
 - (CGFloat)widthForColumnWithIdentifier:(std::string const&)identifier;
 - (data_source_t*)columnWithIdentifier:(std::string const&)identifier;
 
@@ -93,27 +95,12 @@ struct data_source_t
 - (void)dealloc
 {
 	D(DBF_GutterView, bug("\n"););
-	self.partnerView               = nil;
-	self.lineNumberFont            = nil;
-	self.foregroundColor           = nil;
-	self.backgroundColor           = nil;
-	self.iconColor                 = nil;
-	self.iconHoverColor            = nil;
-	self.iconPressedColor          = nil;
-	self.selectionForegroundColor  = nil;
-	self.selectionBackgroundColor  = nil;
-	self.selectionIconColor        = nil;
-	self.selectionIconHoverColor   = nil;
-	self.selectionIconPressedColor = nil;
-	self.selectionBorderColor      = nil;
 	iterate(it, columnDataSources)
 	{
 		if(it->datasource)
 			[[NSNotificationCenter defaultCenter] removeObserver:self name:GVColumnDataSourceDidChange object:it->datasource];
 	}
-	[hiddenColumns release];
 	[[NSNotificationCenter defaultCenter] removeObserver:self];
-	[super dealloc];
 }
 
 - (void)setupSelectionRects
@@ -160,13 +147,12 @@ struct data_source_t
 	D(DBF_GutterView, bug("%s (%p)\n", [[[aView class] description] UTF8String], aView););
 
 	if(_partnerView)
-	{
 		[[NSNotificationCenter defaultCenter] removeObserver:self];
-		[_partnerView release];
-	}
-
-	if(_partnerView = [aView retain])
+	if(_partnerView = aView)
+	{
 		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(boundsDidChange:) name:NSViewBoundsDidChangeNotification object:[[_partnerView enclosingScrollView] contentView]];
+		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(boundsDidChange:) name:NSViewFrameDidChangeNotification object:_partnerView];
+	}
 }
 
 - (void)insertColumnWithIdentifier:(NSString*)columnIdentifier atPosition:(NSUInteger)index dataSource:(id <GutterViewColumnDataSource>)columnDataSource delegate:(id <GutterViewColumnDelegate>)columnDelegate
@@ -229,11 +215,9 @@ struct data_source_t
 	return NULL;
 }
 
-- (std::vector<data_source_t> const&)visibleColumnDataSources
+- (std::vector<data_source_t>)visibleColumnDataSources
 {
-	static std::vector<data_source_t> visibleColumnDataSources;
-	visibleColumnDataSources.clear();
-
+	std::vector<data_source_t> visibleColumnDataSources;
 	iterate(it, columnDataSources)
 	{
 		if([self visibilityForColumnWithIdentifier:[NSString stringWithCxxString:it->identifier]])
@@ -266,19 +250,50 @@ struct data_source_t
 
 - (void)boundsDidChange:(NSNotification*)aNotification
 {
+	[self updateSize];
 	[self.enclosingScrollView.contentView scrollToPoint:NSMakePoint(0, NSMinY(_partnerView.enclosingScrollView.contentView.bounds))];
-	if([self updateWidth] != NSWidth(self.frame))
-		[self invalidateIntrinsicContentSize];
 }
 
-static CTLineRef CTCreateLineFromText (std::string const& text, NSFont* font, NSColor* color = nil)
+- (void)setSize:(NSSize)newSize
 {
-	return CTLineCreateWithAttributedString(ns::attr_string_t(font) << (color ?: [NSColor grayColor]) << text);
+	if(NSEqualSizes(_size, newSize))
+		return;
+	_size = newSize;
+	[self invalidateIntrinsicContentSize];
+}
+
+static CTLineRef CreateCTLineFromText (std::string const& text, NSFont* font, NSColor* color = nil)
+{
+	CTLineRef res = NULL;
+	if(CFMutableDictionaryRef dict = CFDictionaryCreateMutable(kCFAllocatorDefault, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks))
+	{
+		if(CGColorRef cgColor = [color tmCGColor])
+			CFDictionaryAddValue(dict, kCTForegroundColorAttributeName, cgColor);
+
+		if(CFStringRef fontName = (CFStringRef)CFBridgingRetain([font fontName]))
+		{
+			if(CTFontRef ctFont = CTFontCreateWithName(fontName, [font pointSize], NULL))
+			{
+				CFDictionaryAddValue(dict, kCTFontAttributeName, ctFont);
+				CFRelease(ctFont);
+			}
+			CFRelease(fontName);
+		}
+
+		if(CFAttributedStringRef str = CFAttributedStringCreate(kCFAllocatorDefault, cf::wrap(text), dict))
+		{
+			res = CTLineCreateWithAttributedString(str);
+			CFRelease(str);
+		}
+
+		CFRelease(dict);
+	}
+	return res;
 }
 
 static CGFloat WidthOfLineNumbers (NSUInteger lineNumber, NSFont* font)
 {
-	CTLineRef line = CTCreateLineFromText(text::format("%ld", std::max<NSUInteger>(10, lineNumber)), font);
+	CTLineRef line = CreateCTLineFromText(std::to_string(std::max<NSUInteger>(10, lineNumber)), font);
 	CGFloat width  = CTLineGetTypographicBounds(line, NULL, NULL, NULL);
 	CFRelease(line);
 	return ceil(width);
@@ -289,7 +304,7 @@ static void DrawText (std::string const& text, CGRect const& rect, CGFloat basel
 	CGContextRef context = (CGContextRef)[[NSGraphicsContext currentContext] graphicsPort];
 	CGContextSaveGState(context);
 
-	CTLineRef line = CTCreateLineFromText(text, font, color);
+	CTLineRef line = CreateCTLineFromText(text, font, color);
 	CGContextSetTextMatrix(context, CGAffineTransformIdentity);
 	CGContextConcatCTM(context, CGAffineTransformMake(1, 0, 0, -1, 0, 2 * baseline));
 	CGContextSetTextPosition(context, CGRectGetMaxX(rect) - CTLineGetTypographicBounds(line, NULL, NULL, NULL), baseline);
@@ -332,7 +347,7 @@ static void DrawText (std::string const& text, CGRect const& rect, CGFloat basel
 			if(dataSource->identifier == GVLineNumbersColumnIdentifier.UTF8String)
 			{
 				NSColor* textColor = selectedRow ? self.selectionForegroundColor : self.foregroundColor;
-				DrawText(record.softlineOffset == 0 ? text::format("%ld", record.lineNumber + 1) : "·", columnRect, NSMinY(columnRect) + record.baseline, self.lineNumberFont, textColor);
+				DrawText(record.softlineOffset == 0 ? std::to_string(record.lineNumber + 1) : "·", columnRect, NSMinY(columnRect) + record.baseline, self.lineNumberFont, textColor);
 			}
 			else if(record.softlineOffset == 0)
 			{
@@ -378,7 +393,7 @@ static void DrawText (std::string const& text, CGRect const& rect, CGFloat basel
 	}
 }
 
-- (CGFloat)updateWidth
+- (void)updateSize
 {
 	static const CGFloat columnPadding = 1;
 
@@ -398,20 +413,21 @@ static void DrawText (std::string const& text, CGRect const& rect, CGFloat basel
 		}
 	}
 
-	return totalWidth;
+	NSPoint origin = NSMakePoint(0, NSMinY(_partnerView.enclosingScrollView.contentView.bounds));
+	CGFloat height = std::max(NSHeight(_partnerView.frame), origin.y + NSHeight([self visibleRect]));
+	[self setSize:NSMakeSize(totalWidth, height)];
 }
 
 - (NSSize)intrinsicContentSize
 {
-	return NSMakeSize([self updateWidth], NSViewNoInstrinsicMetric);
+	return self.size;
 }
 
 - (void)reloadData:(id)sender
 {
 	D(DBF_GutterView, bug("\n"););
+	[self updateSize];
 	[self setNeedsDisplay:YES];
-	if([self updateWidth] != NSWidth(self.frame))
-		[self invalidateIntrinsicContentSize];
 }
 
 - (NSRect)columnRectForPoint:(NSPoint)aPoint
@@ -490,7 +506,7 @@ static void DrawText (std::string const& text, CGRect const& rect, CGFloat basel
 	if(visible)
 			[hiddenColumns removeObject:columnIdentifier];
 	else	[hiddenColumns addObject:columnIdentifier];
-	[self invalidateIntrinsicContentSize];
+	[self updateSize];
 }
 
 // ==================
@@ -508,10 +524,7 @@ static void DrawText (std::string const& text, CGRect const& rect, CGFloat basel
 {
 	D(DBF_GutterView, bug("\n"););
 	[self clearTrackingRects];
-
-	NSTrackingArea* trackingArea = [[NSTrackingArea alloc] initWithRect:[self visibleRect] options:NSTrackingMouseEnteredAndExited|NSTrackingMouseMoved|NSTrackingActiveInKeyWindow owner:self userInfo:nil];
-	[self addTrackingArea:trackingArea];
-	[trackingArea release];
+	[self addTrackingArea:[[NSTrackingArea alloc] initWithRect:[self visibleRect] options:NSTrackingMouseEnteredAndExited|NSTrackingMouseMoved|NSTrackingActiveInKeyWindow owner:self userInfo:nil]];
 }
 
 - (void)scrollWheel:(NSEvent*)event

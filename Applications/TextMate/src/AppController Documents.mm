@@ -5,28 +5,28 @@
 #import <OakAppKit/NSSavePanel Additions.h>
 #import <OakFoundation/NSArray Additions.h>
 #import <OakFoundation/NSString Additions.h>
-#import <OakFoundation/OakFoundation.h>
 #import <ns/ns.h>
+#import <text/decode.h>
 #import <document/collection.h>
-#import <document/session.h>
 
 OAK_DEBUG_VAR(AppController_Documents);
-
-static NSString* const OakGlobalSessionInfo = @"OakGlobalSessionInfo";
 
 @implementation AppController (Documents)
 - (void)newDocument:(id)sender
 {
 	D(DBF_AppController_Documents, bug("\n"););
-	[[[DocumentController alloc] init] showWindow:nil];
+	[[DocumentController new] showWindow:self];
 }
 
 - (void)newFileBrowser:(id)sender
 {
 	D(DBF_AppController_Documents, bug("\n"););
-	DocumentController* controller = [[DocumentController alloc] init];
-	[controller window];
-	controller.fileBrowserHidden = NO;
+	NSString* urlString = [[NSUserDefaults standardUserDefaults] stringForKey:kUserDefaultsInitialFileBrowserURLKey];
+	NSURL* url          = urlString ? [NSURL URLWithString:urlString] : nil;
+
+	DocumentController* controller = [DocumentController new];
+	controller.defaultProjectPath = [url isFileURL] ? [url path] : NSHomeDirectory();
+	controller.fileBrowserVisible = YES;
 	[controller showWindow:self];
 }
 
@@ -71,7 +71,7 @@ static NSString* const OakGlobalSessionInfo = @"OakGlobalSessionInfo";
 - (BOOL)applicationOpenUntitledFile:(NSApplication*)theApplication
 {
 	D(DBF_AppController_Documents, bug("\n"););
-	[[[DocumentController alloc] init] showWindow:nil];
+	[self newDocument:self];
 	return YES;
 }
 
@@ -81,20 +81,18 @@ static NSString* const OakGlobalSessionInfo = @"OakGlobalSessionInfo";
 	if([[aURL host] isEqualToString:@"open"])
 	{
 		std::map<std::string, std::string> parameters;
-
-		NSArray* components = [[aURL query] componentsSeparatedByString:@"&"];
-		for(NSString* part in components)
+		for(NSString* part in [[aURL query] componentsSeparatedByString:@"&"])
 		{
 			NSArray* keyValue = [part componentsSeparatedByString:@"="];
 			if([keyValue count] == 2)
 			{
-				std::string key = to_s([[keyValue firstObject] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding]);
-				NSURL* fileURL = key == "url" ? [NSURL URLWithString:[keyValue lastObject]] : nil;
-				parameters[key] = to_s([fileURL isFileURL] ? [fileURL path] : [[keyValue lastObject] stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding]);
+				std::string key = decode::url_part(to_s((NSString*)[keyValue firstObject]));
+				parameters[key] = decode::url_part(to_s((NSString*)[keyValue lastObject]));
 			}
 		}
 
 		std::map<std::string, std::string>::const_iterator const& url     = parameters.find("url");
+		std::map<std::string, std::string>::const_iterator const& uuid    = parameters.find("uuid");
 		std::map<std::string, std::string>::const_iterator const& line    = parameters.find("line");
 		std::map<std::string, std::string>::const_iterator const& column  = parameters.find("column");
 		std::map<std::string, std::string>::const_iterator const& project = parameters.find("project");
@@ -106,7 +104,27 @@ static NSString* const OakGlobalSessionInfo = @"OakGlobalSessionInfo";
 
 		if(url != parameters.end())
 		{
-			std::string const& path = url->second;
+			static std::string const kTildeURLPrefixes[] = { "file://localhost/~/", "file:///~/", "file://~/" };
+			static std::string const kRootURLPrefixes[]  = { "file://localhost/", "file:///" };
+
+			std::string const& urlStr = url->second;
+			std::string path = NULL_STR;
+
+			for(auto root : kRootURLPrefixes)
+			{
+				if(urlStr.find(root) == 0)
+					path = path::join("/", urlStr.substr(root.size()));
+			}
+
+			for(auto tilde : kTildeURLPrefixes)
+			{
+				if(urlStr.find(tilde) == 0)
+					path = path::join(path::home(), urlStr.substr(tilde.size()));
+			}
+
+			if(path == NULL_STR && urlStr.find("file://") == 0)
+				path = path::join(path::home(), urlStr.substr(std::string("file://").size()));
+
 			if(path::is_directory(path))
 			{
 				document::show_browser(path);
@@ -115,11 +133,23 @@ static NSString* const OakGlobalSessionInfo = @"OakGlobalSessionInfo";
 			{
 				document::document_ptr doc = document::create(path);
 				doc->set_recent_tracking(false);
-				document::show(doc, project != parameters.end() ? oak::uuid_t(project->second) : document::kCollectionCurrent, range);
+				document::show(doc, project != parameters.end() ? oak::uuid_t(project->second) : document::kCollectionAny, range);
 			}
 			else
 			{
 				NSRunAlertPanel(@"File Does not Exist", @"The item “%@” does not exist.", @"Continue", nil, nil, [NSString stringWithCxxString:path]);
+			}
+		}
+		else if(uuid != parameters.end())
+		{
+			if(document::document_ptr doc = document::find(uuid->second))
+			{
+				doc->set_recent_tracking(false);
+				document::show(doc, project != parameters.end() ? oak::uuid_t(project->second) : document::kCollectionAny, range);
+			}
+			else
+			{
+				NSRunAlertPanel(@"File Does not Exist", @"No document found for UUID %@.", @"Continue", nil, nil, [NSString stringWithCxxString:uuid->second]);
 			}
 		}
 		else if(range != text::range_t::undefined)
@@ -129,7 +159,7 @@ static NSString* const OakGlobalSessionInfo = @"OakGlobalSessionInfo";
 				BOOL foundTextView = [[win firstResponder] tryToPerform:@selector(setSelectionString:) with:[NSString stringWithCxxString:range]];
 				if(!foundTextView)
 				{
-					NSMutableArray* allViews = [[[[win contentView] subviews] mutableCopy] autorelease];
+					NSMutableArray* allViews = [[[win contentView] subviews] mutableCopy];
 					for(NSUInteger i = 0; i < [allViews count]; ++i)
 						[allViews addObjectsFromArray:[[allViews objectAtIndex:i] subviews]];
 
@@ -170,59 +200,13 @@ static NSString* const OakGlobalSessionInfo = @"OakGlobalSessionInfo";
 	return !disableUntitledAtReactivationPrefs;
 }
 
-// =====================
-// = Load/Save Session =
-// =====================
-
-- (void)windowNotificationActual:(id)sender
-{
-	document::schedule_session_backup();
-}
-
-- (void)windowNotification:(NSNotification*)aNotification
-{
-	D(DBF_AppController_Documents, bug("%s\n", [[aNotification description] UTF8String]););
-	[self performSelector:@selector(windowNotificationActual:) withObject:nil afterDelay:0]; // A deadlock happens if we receive a notification while a sheet is closing and we save session (since session saving schedules a timer with the run loop, and the run loop is in a special state when a sheet is up, or something like that --Allan)
-}
-
-- (BOOL)loadSession:(id)sender
-{
-	BOOL res = document::load_session();
-
-	static NSString* const WindowNotifications[] = { NSWindowDidBecomeKeyNotification, NSWindowDidDeminiaturizeNotification, NSWindowDidExposeNotification, NSWindowDidMiniaturizeNotification, NSWindowDidMoveNotification, NSWindowDidResizeNotification, NSWindowWillCloseNotification };
-	iterate(notification, WindowNotifications)
-		[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(windowNotification:) name:*notification object:nil];
-
-	return res;
-}
-
 // ===========================
 // = Application Termination =
 // ===========================
 
-- (void)closeAllWindows:(id)sender
-{
-	D(DBF_AppController_Documents, bug("\n"););
-	@autoreleasepool {
-		for(NSWindow* window in [NSApp windows])
-		{
-			if(window.isVisible)
-				[window close];
-		}
-	}
-}
-
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender
 {
 	D(DBF_AppController_Documents, bug("%s\n", [NSApp windows].description.UTF8String););
-	for(NSWindow* window in [NSApp orderedWindows])
-	{
-		DocumentController* delegate = (DocumentController*)[window delegate];
-		if([delegate isKindOfClass:[DocumentController class]])
-			return [delegate applicationShouldTerminate:sender];
-	}
-
-	document::save_session(false);
-	return NSTerminateNow;
+	return [DocumentController applicationShouldTerminate:sender];
 }
 @end

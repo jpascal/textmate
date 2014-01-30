@@ -6,36 +6,96 @@
 #import <oak/debug.h>
 #import <oak/oak.h>
 
-@protocol OFBOutlineViewMenuDelegate
-- (NSMenu*)menuForOutlineView:(NSOutlineView*)anOutlineView;
-@end
-
 @protocol FSDataSourceDragSource
 - (void)outlineView:(NSOutlineView*)anOutlineView draggedItems:(NSArray*)someItems endedWithOperation:(NSDragOperation)aDragOperation;
 @end
 
 @interface OFBOutlineView ()
+{
+	OBJC_WATCH_LEAKS(OFBOutlineView);
+
+	BOOL fieldEditorWasUp;
+	NSRect mouseHoverRect;
+
+	NSTableViewSelectionHighlightStyle defaultSelectionHighlightStyle;
+	NSTableViewDraggingDestinationFeedbackStyle defaultDraggingDestinationFeedbackStyle;
+	CGFloat defaultRowHeight;
+	NSSize defaultIntercellSpacing;
+	NSColor* defaultBackgroundColor;
+}
 @property (nonatomic, retain) NSIndexSet* draggedRows;
 
 - (void)performDoubleClick:(id)sender;
-
-- (BOOL)isPointInImage:(NSPoint)point;
-- (BOOL)isPointInText:(NSPoint)aPoint;
-- (BOOL)isPointInCloseButton:(NSPoint)aPoint;
 @end
 
 @implementation OFBOutlineView
-@synthesize menuDelegate, draggedRows;
-
-- (void)dealloc
+- (void)setRenderAsSourceList:(BOOL)value
 {
-	self.draggedRows = nil;
-	[super dealloc];
+	if(_renderAsSourceList == value)
+		return;
+
+	if(_renderAsSourceList = value)
+	{
+		defaultSelectionHighlightStyle          = [self selectionHighlightStyle];
+		defaultDraggingDestinationFeedbackStyle = [self draggingDestinationFeedbackStyle];
+		defaultRowHeight                        = [self rowHeight];
+		defaultIntercellSpacing                 = [self intercellSpacing];
+		defaultBackgroundColor                  = [self backgroundColor];
+
+		[self setSelectionHighlightStyle:NSTableViewSelectionHighlightStyleSourceList];
+		[self setRowHeight:16];
+		[self setIntercellSpacing:NSMakeSize(3.0, 2.0)];
+	}
+	else
+	{
+		[self setSelectionHighlightStyle:defaultSelectionHighlightStyle];
+		[self setRowHeight:defaultRowHeight];
+		[self setIntercellSpacing:defaultIntercellSpacing];
+
+		// setting selectionHighlightStyle to NSTableViewSelectionHighlightStyleSourceList
+		// will also change these properties and won't automaticlly be restored
+		[self setBackgroundColor:defaultBackgroundColor];
+		[self setDraggingDestinationFeedbackStyle:defaultDraggingDestinationFeedbackStyle];
+	}
+}
+
+/**
+ * Fixes the indentation of the row with the given index.
+ *
+ * When the source list style is used, the second level won't be indented.
+ * The reason for this is most likely due to the first level intended to
+ * be used as a "group row".
+ * But since group rows are not used we need to fix the indentation.
+ */
+- (NSRect)increaseIndentationAtRow:(NSInteger)row rect:(NSRect)rect adjustWidth:(BOOL)adjustWidth
+{
+	if(self.renderAsSourceList && [self levelForRow:row] != 0)
+	{
+		CGFloat indentation = [self indentationPerLevel];
+		rect.origin.x += indentation;
+		if(adjustWidth)
+			rect.size.width -= indentation;
+	}
+	return rect;
+}
+
+// Override to fix indentation
+- (NSRect)frameOfOutlineCellAtRow:(NSInteger)row
+{
+	NSRect rect = [super frameOfOutlineCellAtRow:row];
+	return [self increaseIndentationAtRow:row rect:rect adjustWidth:NO];
+}
+
+// Override to fix indentation
+- (NSRect)frameOfCellAtColumn:(NSInteger)column row:(NSInteger)row
+{
+	NSRect rect = [super frameOfCellAtColumn:column row:row];
+	return [self increaseIndentationAtRow:row rect:rect adjustWidth:YES];
 }
 
 - (void)showContextMenu:(id)sender
 {
-	if(NSMenu* menu = [menuDelegate menuForOutlineView:self])
+	if(NSMenu* menu = [self.menuDelegate menuForOutlineView:self])
 	{
 		NSInteger row = [self selectedRow] != -1 ? [self selectedRow] : 0;
 		NSRect rect = [self convertRect:[self rectOfRow:row] toView:nil];
@@ -61,7 +121,7 @@
 
 - (NSMenu*)menuForEvent:(NSEvent*)theEvent
 {
-	if(!menuDelegate)
+	if(!self.menuDelegate)
 		return [super menuForEvent:theEvent];
 
 	int row = [self rowAtPoint:[self convertPoint:[theEvent locationInWindow] fromView:nil]];
@@ -69,7 +129,7 @@
 		[self selectRowIndexes:[NSIndexSet indexSet] byExtendingSelection:NO];
 	else if(![self.selectedRowIndexes containsIndex:row])
 		[self selectRowIndexes:[NSIndexSet indexSetWithIndex:row] byExtendingSelection:NO];
-	return [menuDelegate menuForOutlineView:self];
+	return [self.menuDelegate menuForOutlineView:self];
 }
 
 // =============================
@@ -78,20 +138,21 @@
 
 - (BOOL)shouldActivate
 {
-	NSEvent* event = [NSApp currentEvent];
-	BOOL res = [event type] != NSLeftMouseDown || ([event modifierFlags] & (NSShiftKeyMask | NSControlKeyMask | NSAlternateKeyMask));
-
 	id firstResponder = [[self window] firstResponder];
-	res = res || ([firstResponder respondsToSelector:@selector(delegate)] && [firstResponder delegate] == self);
-	res = res || fieldEditorWasUp;
-	if(res)
+	if(([firstResponder respondsToSelector:@selector(delegate)] && [firstResponder delegate] == self) || fieldEditorWasUp)
 		return YES;
 
-	NSPoint p = [self convertPoint:[event locationInWindow] fromView:nil];
-	if([self isPointInImage:p] || [self isPointInCloseButton:p])
-		return NO; // Don’t activate when clicking an image to open a document
+	NSEvent* event = [NSApp currentEvent];
+	if([event type] != NSLeftMouseDown)
+		return YES;
 
-	return [self isRowSelected:[self rowAtPoint:p]] && (event.modifierFlags & NSCommandKeyMask) == 0;
+	NSInteger row = [self rowAtPoint:[self convertPoint:[event locationInWindow] fromView:nil]];
+	NSUInteger hit = row == -1 ? 0 : [[self preparedCellAtColumn:0 row:row] hitTestForEvent:event inRect:[self frameOfCellAtColumn:0 row:row] ofView:self];
+	if(hit & (OFBPathInfoCellHitOpenItem | OFBPathInfoCellHitRevealItem | NSCellHitTrackableArea))
+		return NO;
+
+	NSPoint p = [self convertPoint:[event locationInWindow] fromView:nil];
+	return [self isRowSelected:[self rowAtPoint:p]] && !(event.modifierFlags & NSCommandKeyMask);
 }
 
 - (BOOL)acceptsFirstResponder
@@ -105,7 +166,7 @@
 
 - (void)performDoubleClick:(id)sender
 {
-	[[self target] performSelector:[self doubleAction] withObject:self];
+	[NSApp sendAction:[self doubleAction] to:[self target] from:self];
 }
 
 - (void)performEditSelectedRow:(id)sender
@@ -118,21 +179,15 @@
 {
 	static struct key_action_t { std::string key; SEL action; } const KeyActions[] =
 	{
-		{ "@C",                                      @selector(goToComputer:)             },
-		{ "@H",                                      @selector(goToHome:)                 },
-		{ "@D",                                      @selector(goToDesktop:)              },
-		{ "@[",                                      @selector(goBack:)                   },
-		{ "@]",                                      @selector(goForward:)                },
 		{ "@" + utf8::to_s(NSLeftArrowFunctionKey),  @selector(goBack:)                   },
 		{ "@" + utf8::to_s(NSRightArrowFunctionKey), @selector(goForward:)                },
 		{ utf8::to_s(NSCarriageReturnCharacter),     @selector(performEditSelectedRow:)   },
 		{ utf8::to_s(NSEnterCharacter),              @selector(performEditSelectedRow:)   },
 		{ "@" + utf8::to_s(NSDownArrowFunctionKey),  @selector(performDoubleClick:)       },
 		{ "@o",                                      @selector(performDoubleClick:)       },
-		{ "@N",                                      @selector(newFolderInSelectedFolder:)},
 		{ "@d",                                      @selector(duplicateSelectedEntries:) },
 		{ "@G",                                      @selector(orderFrontGoToFolder:)     },
-		{ " ",                                       @selector(quickLookSelectedEntries:) },
+		{ " ",                                       @selector(toggleQuickLookPreview:)   },
 		{ "~\uF705",                                 @selector(showContextMenu:)          },
 	};
 
@@ -158,10 +213,10 @@
 
 - (void)draggedImage:(NSImage*)anImage endedAt:(NSPoint)aPoint operation:(NSDragOperation)aDragOperation
 {
-	if(draggedRows && [self.dataSource respondsToSelector:@selector(outlineView:draggedItems:endedWithOperation:)])
+	if(self.draggedRows && [self.dataSource respondsToSelector:@selector(outlineView:draggedItems:endedWithOperation:)])
 	{
 		NSMutableArray* items = [NSMutableArray array];
-		for(NSUInteger index = [draggedRows firstIndex]; index != NSNotFound; index = [draggedRows indexGreaterThanIndex:index])
+		for(NSUInteger index = [self.draggedRows firstIndex]; index != NSNotFound; index = [self.draggedRows indexGreaterThanIndex:index])
 			[items addObject:[self itemAtRow:index]];
 		[(id <FSDataSourceDragSource>)self.dataSource outlineView:self draggedItems:items endedWithOperation:aDragOperation];
 	}
@@ -244,14 +299,10 @@
 		NSRect imageFrame = [[[[self tableColumns] lastObject] dataCell] imageFrameWithFrame:cellFrame inControlView:self];
 		imageFrame.origin.y    = cellFrame.origin.y;
 		imageFrame.size.height = cellFrame.size.height + self.intercellSpacing.height;
-		NSTrackingArea* cursorRect = [[NSTrackingArea alloc] initWithRect:imageFrame options:NSTrackingCursorUpdate|NSTrackingActiveInKeyWindow owner:self userInfo:NULL];
-		[self addTrackingArea:cursorRect];
-		[cursorRect release];
+		[self addTrackingArea:[[NSTrackingArea alloc] initWithRect:imageFrame options:NSTrackingCursorUpdate|NSTrackingActiveInKeyWindow owner:self userInfo:NULL]];
 	}
 
-	NSTrackingArea* trackingArea = [[NSTrackingArea alloc] initWithRect:[self visibleRect] options:NSTrackingMouseMoved|NSTrackingActiveInKeyWindow owner:self userInfo:NULL];
-	[self addTrackingArea:trackingArea];
-	[trackingArea release];
+	[self addTrackingArea:[[NSTrackingArea alloc] initWithRect:[self visibleRect] options:NSTrackingMouseEnteredAndExited|NSTrackingMouseMoved|NSTrackingActiveInKeyWindow owner:self userInfo:NULL]];
 }
 
 // ===============
@@ -280,17 +331,13 @@
 	}
 }
 
-// ========================
-// = Hit Testing The Cell =
-// ========================
-
-- (NSUInteger)hitTestForPoint:(NSPoint)aPoint
+- (void)mouseExited:(NSEvent*)anEvent
 {
-	NSInteger row = [self rowAtPoint:aPoint];
-	return row == -1 ? 0 : [[self preparedCellAtColumn:0 row:row] hitTestForEvent:[NSApp currentEvent] inRect:[self frameOfCellAtColumn:0 row:row] ofView:self];
+	if(!NSEqualRects(mouseHoverRect,  NSZeroRect))
+	{
+		[self setNeedsDisplayInRect:mouseHoverRect];
+		mouseHoverRect =  NSZeroRect;
+	}
+	[super mouseExited:anEvent];
 }
-
-- (BOOL)isPointInImage:(NSPoint)aPoint       { return ([self hitTestForPoint:aPoint] & OakImageAndTextCellHitImage)   == OakImageAndTextCellHitImage;   }
-- (BOOL)isPointInText:(NSPoint)aPoint        { return ([self hitTestForPoint:aPoint] & OakImageAndTextCellHitText)    == OakImageAndTextCellHitText;    }
-- (BOOL)isPointInCloseButton:(NSPoint)aPoint { return ([self hitTestForPoint:aPoint] & OFBPathInfoCellHitCloseButton) == OFBPathInfoCellHitCloseButton; }
 @end

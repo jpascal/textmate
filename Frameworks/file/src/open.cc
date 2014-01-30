@@ -12,6 +12,7 @@
 #include <settings/settings.h>
 #include <text/trim.h>
 #include <text/utf8.h>
+#include <text/newlines.h>
 #include <oak/server.h>
 #include <oak/debug.h>
 
@@ -161,14 +162,14 @@ namespace file
 		result_t result;
 		result.error_code = 0;
 
-		int fd = ::open(request.path.c_str(), O_RDONLY);
+		int fd = ::open(request.path.c_str(), O_RDONLY|O_CLOEXEC);
 		if(fd != -1)
 		{
 			struct stat sbuf;
 			if(fstat(fd, &sbuf) != -1)
 			{
 				fcntl(fd, F_NOCACHE, 1);
-				result.bytes.reset(new io::bytes_t(sbuf.st_size));
+				result.bytes = std::make_shared<io::bytes_t>(sbuf.st_size);
 				if(read(fd, result.bytes->get(), result.bytes->size()) != sbuf.st_size)
 					result.bytes.reset();
 			}
@@ -187,7 +188,7 @@ namespace file
 				conn << "read" << request.path;
 				std::string content;
 				conn >> content >> result.attributes;
-				result.bytes.reset(new io::bytes_t(content));
+				result.bytes = std::make_shared<io::bytes_t>(content);
 			}
 			else
 			{
@@ -204,7 +205,7 @@ namespace file
 	void read_t::handle_reply (read_t::result_t const& result)
 	{
 		if(!result.bytes && result.error_code == ENOENT)
-				_context->set_content(io::bytes_ptr(new io::bytes_t("")), result.attributes);
+				_context->set_content(std::make_shared<io::bytes_t>(""), result.attributes);
 		else	_context->set_content(result.bytes, result.attributes);
 		delete this;
 	}
@@ -214,26 +215,6 @@ namespace file
 // ====================
 // = Encoding Support =
 // ====================
-
-template <typename _InputIter>
-std::string charset_from_bom (_InputIter const& first, _InputIter const& last)
-{
-	static struct UTFBOMTests { std::string bom; std::string encoding; } const BOMTests[] =
-	{
-		{ std::string("\x00\x00\xFE\xFF", 4), kCharsetUTF32BE },
-		{ std::string("\xFE\xFF",         2), kCharsetUTF16BE },
-		{ std::string("\xFF\xFE\x00\x00", 4), kCharsetUTF32LE },
-		{ std::string("\xFF\xFE",         2), kCharsetUTF16LE },
-		{ std::string("\uFEFF",           3), kCharsetUTF8    }
-	};
-
-	for(size_t i = 0; i < sizeofA(BOMTests); ++i)
-	{
-		if(oak::has_prefix(first, last, BOMTests[i].bom.begin(), BOMTests[i].bom.end()))
-			return BOMTests[i].encoding;
-	}
-	return kCharsetNoEncoding;
-}
 
 static bool not_ascii (char ch)
 {
@@ -258,42 +239,6 @@ static io::bytes_ptr convert (io::bytes_ptr content, std::string const& from, st
 
 	content = encoding::convert(content, from, to);
 	return bom ? remove_bom(content) : content;
-}
-
-// =====================
-// = Line Feed Support =
-// =====================
-
-template <typename _InputIter>
-std::string find_line_endings (_InputIter const& first, _InputIter const& last)
-{
-	size_t cr_count = std::count(first, last, '\r');
-	size_t lf_count = std::count(first, last, '\n');
-
-	if(cr_count == 0)
-		return kLF;
-	else if(lf_count == 0)
-		return kCR;
-	else if(lf_count == cr_count)
-		return kCRLF;
-	else
-		return kLF;
-}
-
-template <typename _InputIter>
-_InputIter harmonize_line_endings (_InputIter first, _InputIter last, std::string const& lineFeeds)
-{
-	_InputIter out = first;
-	while(first != last)
-	{
-		bool isCR = *first == '\r';
-		if(out != first || isCR)
-			*out = isCR ? '\n' : *first;
-		if(++first != last && isCR && *first == '\n')
-			++first;
-		++out;
-	}
-	return out;
 }
 
 // ===================================
@@ -412,7 +357,7 @@ namespace
 					{
 						case kEstimateEncodingStateBOM:
 						{
-							std::string const charset = charset_from_bom(first, last);
+							std::string const charset = encoding::charset_from_bom(first, last);
 							if(charset != kCharsetNoEncoding)
 							{
 								_encoding.set_charset(charset);
@@ -437,7 +382,7 @@ namespace
 						break;
 
 						case kEstimateEncodingStatePathSettings:
-							_encoding.set_charset(settings_for_path(_path, "attr.file.unknown-encoding " + file::path_attributes(_path)).get(kSettingsEncodingKey, kCharsetUnknown));
+							_encoding.set_charset(settings_for_path(_path, "attr.file.unknown-encoding " + _path_attributes).get(kSettingsEncodingKey, kCharsetUnknown));
 						break;
 
 						case kEstimateEncodingStateAskUser:
@@ -476,7 +421,7 @@ namespace
 					_state      = kStateIdle;
 					_next_state = kStateHarmonizeLineFeeds;
 
-					_encoding.set_newlines(find_line_endings(_content->begin(), _content->end()));
+					_encoding.set_newlines(text::estimate_line_endings(_content->begin(), _content->end()));
 					if(_encoding.newlines() != kMIX)
 							proceed();
 					else	_callback->select_line_feeds(_path, _content, shared_from_this());
@@ -487,7 +432,7 @@ namespace
 				{
 					if(_encoding.newlines() != kLF)
 					{
-						char* newEnd = harmonize_line_endings(_content->begin(), _content->end(), _encoding.newlines());
+						char* newEnd = text::convert_line_endings(_content->begin(), _content->end(), _encoding.newlines());
 						_content->resize(newEnd - _content->begin());
 					}
 					_state = kStateExecuteTextImportFilter;
@@ -544,7 +489,7 @@ namespace
 				case kStateShowContent:
 				{
 					_state = kStateDone;
-					_callback->show_content(_path, _content, _attributes, _file_type, _path_attributes, _encoding, _binary_import_filters, _text_import_filters);
+					_callback->show_content(_path, _content, _attributes, _file_type, _encoding, _binary_import_filters, _text_import_filters);
 				}
 				break;
 			}
@@ -558,8 +503,8 @@ namespace file
 {
 	void open (std::string const& path, osx::authorization_t auth, open_callback_ptr cb, io::bytes_ptr existingContent, std::string const& virtualPath)
 	{
-		open_context_ptr context(new open_file_context_t(path, existingContent, auth, cb, virtualPath));
-		std::static_pointer_cast<open_file_context_t>(context)->proceed();
+		auto context = std::make_shared<open_file_context_t>(path, existingContent, auth, cb, virtualPath);
+		context->proceed();
 	}
 
 } /* file */

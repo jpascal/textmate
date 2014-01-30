@@ -22,8 +22,13 @@ PUBLIC extern NSString* const kUserDefaultsFoldersOnTopKey;
 PUBLIC extern NSString* const kUserDefaultsShowFileExtensionsKey;
 PUBLIC extern NSString* const kUserDefaultsInitialFileBrowserURLKey;
 PUBLIC extern NSString* const kUserDefaultsFileBrowserPlacementKey;
-PUBLIC extern NSString* const kUserDefaultsDisableTabBarCollapsingKey;
+PUBLIC extern NSString* const kUserDefaultsFileBrowserSingleClickToOpenKey;
+PUBLIC extern NSString* const kUserDefaultsFileBrowserOpenAnimationDisabled;
+PUBLIC extern NSString* const kUserDefaultsFileBrowserStyleKey;
 PUBLIC extern NSString* const kUserDefaultsHTMLOutputPlacementKey;
+PUBLIC extern NSString* const kUserDefaultsTabsAboveDocumentKey;
+PUBLIC extern NSString* const kUserDefaultsDisableFileBrowserWindowResizeKey;
+PUBLIC extern NSString* const kUserDefaultsAutoRevealFileKey;
 
 // ===========
 // = Bundles =
@@ -34,13 +39,6 @@ PUBLIC extern NSString* const kUserDefaultsHTMLOutputPlacementKey;
 // =============
 
 PUBLIC extern NSString* const kUserDefaultsEnvironmentVariablesKey;
-
-// ===================
-// = Software Update =
-// ===================
-
-PUBLIC extern NSString* const kUserDefaultsDisableBundleUpdatesKey;
-PUBLIC extern NSString* const kUserDefaultsLastBundleUpdateCheckKey;
 
 // ============
 // = Terminal =

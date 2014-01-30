@@ -19,7 +19,7 @@ static clipboard_t::entry_ptr to_entry (OakPasteboardEntry* src, BOOL includeFin
 		return clipboard_t::entry_ptr();
 
 	std::map<std::string, std::string> map;
-	plist::dictionary_t const& plist = plist::convert(src.options);
+	plist::dictionary_t const& plist = plist::convert((__bridge CFDictionaryRef)src.options);
 	iterate(pair, plist)
 		plist::get_key_path(plist, pair->first, map[pair->first]);
 
@@ -29,25 +29,24 @@ static clipboard_t::entry_ptr to_entry (OakPasteboardEntry* src, BOOL includeFin
 		map["ignoreCase"] = [[NSUserDefaults standardUserDefaults] boolForKey:kUserDefaultsFindIgnoreCase] ? "1" : "0";
 	}
 
-	return clipboard_t::entry_ptr(new my_entry_t(to_s(src.string), map));
+	return std::make_shared<my_entry_t>(to_s(src.string), map);
 }
 
 struct oak_pasteboard_t : clipboard_t
 {
 	oak_pasteboard_t (NSString* pboardName)
 	{
-		pasteboard         = [[OakPasteboard pasteboardWithName:pboardName] retain];
+		pasteboard         = [OakPasteboard pasteboardWithName:pboardName];
 		includeFindOptions = [pboardName isEqualToString:NSFindPboard];
 	}
 
-	~oak_pasteboard_t ()                    { [pasteboard release]; }
 	bool empty () const                     { return false; }
 
 	entry_ptr previous ()                   { return to_entry([pasteboard previous], includeFindOptions); }
 	entry_ptr current () const              { return to_entry([pasteboard current], includeFindOptions); }
 	entry_ptr next ()                       { return to_entry([pasteboard next], includeFindOptions); }
 
-	void push_back (entry_ptr entry)        { [pasteboard addEntry:[OakPasteboardEntry pasteboardEntryWithString:[NSString stringWithCxxString:entry->content()] andOptions:(NSDictionary*)((CFDictionaryRef)cf::wrap(entry->options()))]]; }
+	void push_back (entry_ptr entry)        { [pasteboard addEntry:[OakPasteboardEntry pasteboardEntryWithString:[NSString stringWithCxxString:entry->content()] andOptions:(__bridge NSDictionary*)((CFDictionaryRef)cf::wrap(entry->options()))]]; }
 private:
 	OakPasteboard* pasteboard;
 	BOOL includeFindOptions;
@@ -55,5 +54,5 @@ private:
 
 clipboard_ptr get_clipboard (NSString* pboardName)
 {
-	return clipboard_ptr(new oak_pasteboard_t(pboardName));
+	return std::make_shared<oak_pasteboard_t>(pboardName);
 }

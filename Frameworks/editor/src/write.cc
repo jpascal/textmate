@@ -3,56 +3,6 @@
 #include <text/ctype.h>
 #include <oak/server.h>
 
-namespace
-{
-	struct write_t
-	{
-		struct request_t { int fd; std::string str; };
-
-		WATCH_LEAKS(write_t);
-
-		write_t (int fd, std::string const& str);
-		virtual ~write_t ();
-
-		static int handle_request (write_t::request_t const& request);
-		void handle_reply (int error);
-
-	private:
-		size_t client_key;
-	};
-
-	static oak::server_t<write_t>& server ()
-	{
-		static oak::server_t<write_t> instance;
-		return instance;
-	}
-
-	write_t::write_t (int fd, std::string const& str)
-	{
-		client_key = server().register_client(this);
-		int newFd = dup(fd);
-		fcntl(newFd, F_SETFD, FD_CLOEXEC);
-		server().send_request(client_key, (request_t){ newFd, str });
-	}
-
-	write_t::~write_t ()
-	{
-		server().unregister_client(client_key);
-	}
-
-	int write_t::handle_request (write_t::request_t const& request)
-	{
-		bool success = write(request.fd, request.str.data(), request.str.size()) == request.str.size();
-		close(request.fd);
-		return success ? 0 : errno;
-	}
-
-	void write_t::handle_reply (int error)
-	{
-		delete this;
-	}
-}
-
 namespace ng
 {
 	static size_t count_columns (buffer_t const& buffer, index_t caret, size_t tabSize)
@@ -64,7 +14,7 @@ namespace ng
 		return len + caret.carry;
 	}
 
-	text::range_t write_unit_to_fd (buffer_t const& buffer, range_t const& range, size_t tabSize, int fd, input::type unit, input::type fallbackUnit, input_format::type format, scope::selector_t const& scopeSelector, std::map<std::string, std::string>& variables, bool* inputWasSelection) // TODO Move write_unit_to_fd to command framework.
+	ng::range_t write_unit_to_fd (buffer_t const& buffer, range_t const& range, size_t tabSize, int fd, input::type unit, input::type fallbackUnit, input_format::type format, scope::selector_t const& scopeSelector, std::map<std::string, std::string>& variables, bool* inputWasSelection) // TODO Move write_unit_to_fd to command framework.
 	{
 		input::type actualUnit = unit == input::selection && range.empty() ? fallbackUnit : unit;
 		*inputWasSelection = actualUnit == input::selection;
@@ -91,18 +41,26 @@ namespace ng
 				str += format == input_format::xml ? to_xml(buffer, range->min().index, range->max().index) : buffer.substr(range->min().index, range->max().index);
 				first = false;
 			}
-			new write_t(fd, str);
+
+			dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+				if(write(fd, str.data(), str.size()) == -1)
+					perror("write");
+				close(fd);
+			});
 		}
-		close(fd);
+		else
+		{
+			close(fd);
+		}
 
 		if(r && actualUnit != input::entire_document)
 		{
 			text::pos_t const& pos = buffer.convert(r.min().index);
-			variables.insert(std::make_pair("TM_INPUT_START_LINE",       text::format("%zu", pos.line + 1)));
-			variables.insert(std::make_pair("TM_INPUT_START_LINE_INDEX", text::format("%zu", pos.column)));
-			variables.insert(std::make_pair("TM_INPUT_START_COLUMN",     text::format("%zu", count_columns(buffer, r.min(), tabSize) + 1)));
+			variables.emplace("TM_INPUT_START_LINE",       std::to_string(pos.line + 1));
+			variables.emplace("TM_INPUT_START_LINE_INDEX", std::to_string(pos.column));
+			variables.emplace("TM_INPUT_START_COLUMN",     std::to_string(count_columns(buffer, r.min(), tabSize) + 1));
 		}
-		return text::range_t(buffer.convert(r.min().index), buffer.convert(r.max().index));
+		return r;
 	}
 
 } /* ng */

@@ -1,7 +1,6 @@
 #include "application.h"
 #include <io/io.h>
 #include <cf/cf.h>
-#include <text/format.h>
 #include <oak/compat.h>
 #include <oak/datatypes.h>
 #include <oak/debug.h>
@@ -26,28 +25,23 @@ namespace oak
 		return NULL_STR;
 	}
 
-	static void disable_interactive_input ()
+	application_t::application_t (int argc, char const* argv[], bool redirectStdErr)
 	{
-		if(int fd = strtol(getenv("TM_INTERACTIVE_INPUT_ECHO_FD") ?: "0", NULL, 10))
-		{
-			close(fd);
-			unsetenv("TM_INTERACTIVE_INPUT_ECHO_FD");
-		}
-		if(int fd = strtol(getenv("TM_ERROR_FD") ?: "0", NULL, 10))
-		{
-			close(fd);
-			unsetenv("TM_ERROR_FD");
-		}
-	}
-
-	application_t::application_t (int argc, char const* argv[])
-	{
-		disable_interactive_input(); // this is only relevant when we launch TM from a TM command that uses interactive input (like make) — each relaunch will allocate two new file descriptors, so eventually we’ll run out of them
-
 		_app_name      = getenv("OAK_APP_NAME") ?: path::name(argv[0]);
 		_full_app_path = path::join(path::cwd(), argv[0]);
 		_app_path      = _full_app_path;
 		_pid_path      = support(((CFBundleGetMainBundle() && CFBundleGetIdentifier(CFBundleGetMainBundle())) ? cf::to_s(CFBundleGetIdentifier(CFBundleGetMainBundle())) : _app_name) + ".pid");
+
+		if(redirectStdErr)
+		{
+			char const* logPath = getenv("LOG_PATH");
+			if(logPath && path::is_absolute(logPath) && path::make_dir(logPath))
+			{
+				std::string const logFile = path::join(logPath, _app_name + ".log");
+				if(FILE* fp = freopen(logFile.c_str(), "w+", stderr))
+					setlinebuf(fp);
+			}
+		}
 
 		std::string const appBinary = path::join("Contents/MacOS", _app_name);
 		if(_app_path.size() > appBinary.size() && _app_path.find(appBinary) == _app_path.size() - appBinary.size())
@@ -103,18 +97,17 @@ namespace oak
 
 		create_pid_file();
 
-		if(getenv("OAK_ACTIVATE") || getenv("OAK_RELAUNCH"))
+		if(getenv("OAK_RELAUNCH"))
 		{
 			D(DBF_Application, bug("bring new instance to front\n"););
 			SetFrontProcess(&(ProcessSerialNumber){ 0, kCurrentProcess });
-			unsetenv("OAK_ACTIVATE");
 			unsetenv("OAK_RELAUNCH");
 		}
 	}
 
 	void application_t::create_pid_file ()
 	{
-		if(path::set_content(_pid_path, text::format("%d", getpid())))
+		if(path::set_content(_pid_path, std::to_string(getpid())))
 		{
 			atexit(&remove_pid_file);
 		}
@@ -184,7 +177,7 @@ namespace oak
 	std::string application_t::support (std::string const& relativePath)
 	{
 		if(_support_path == NULL_STR)
-			_support_path = path::join(path::join(path::home(), "Library/Application Support"), name());
+			_support_path = path::join({ path::home(), "Library/Application Support", name() });
 		return path::join(_support_path, relativePath);
 	}
 
@@ -216,7 +209,7 @@ namespace oak
 			fprintf(stderr, "*** relaunch failed: process terminated with status %d.\n", status);
 	}
 
-	void application_t::relaunch (bool disableUserInteraction)
+	void application_t::relaunch ()
 	{
 		ASSERT(_full_app_path != NULL_STR);
 		D(DBF_Application, bug("%s\n", _full_app_path.c_str()););
@@ -224,13 +217,13 @@ namespace oak
 		create_pid_file(); // we create this during startup, but incase there was no support folder it would have failed
 
 		std::map<std::string, std::string> envMap = oak::basic_environment();
-		envMap["OAK_RELAUNCH"] = disableUserInteraction ? "QUICK" : "1";
+		envMap["OAK_RELAUNCH"] = "QUICK";
 		oak::c_array env(envMap);
 
 		pid_t pid = vfork();
 		if(pid == 0)
 		{
-			char const* argv[] = { _full_app_path.c_str(), NULL };
+			char const* argv[] = { _full_app_path.c_str(), "-disableSessionRestore", "0", NULL };
 			execve(argv[0], (char* const*)argv, env);
 			perror("relaunch");
 			_exit(-1);

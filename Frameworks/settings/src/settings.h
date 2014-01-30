@@ -28,16 +28,17 @@ struct PUBLIC settings_t
 		return get<std::string>(key, defaultValue);
 	}
 	
-	std::map<std::string, std::string> all_settings() const {
+	std::map<std::string, std::string> all_settings () const
+	{
 		return settings;
 	}
 
 	static std::string raw_get (std::string const& key, std::string const& section = "");
 
 	static void set (std::string const& key, std::string const& value, std::string const& fileType = "", std::string const& path = NULL_STR);
-	static void set (std::string const& key, double decimal,  std::string const& fileType = "", std::string const& path = NULL_STR) { settings_t::set(key, text::format("%f", decimal),          fileType, path); }
-	static void set (std::string const& key, size_t number,   std::string const& fileType = "", std::string const& path = NULL_STR) { settings_t::set(key, text::format("%zu", number),          fileType, path); }
-	static void set (std::string const& key, int32_t number,  std::string const& fileType = "", std::string const& path = NULL_STR) { settings_t::set(key, text::format("%d", number),           fileType, path); }
+	static void set (std::string const& key, double decimal,  std::string const& fileType = "", std::string const& path = NULL_STR) { settings_t::set(key, std::to_string(decimal),              fileType, path); }
+	static void set (std::string const& key, size_t number,   std::string const& fileType = "", std::string const& path = NULL_STR) { settings_t::set(key, std::to_string(number),               fileType, path); }
+	static void set (std::string const& key, int32_t number,  std::string const& fileType = "", std::string const& path = NULL_STR) { settings_t::set(key, std::to_string(number),               fileType, path); }
 	static void set (std::string const& key, bool flag,       std::string const& fileType = "", std::string const& path = NULL_STR) { settings_t::set(key, std::string(flag ? "true" : "false"), fileType, path); }
 	static void set (std::string const& key, char const* str, std::string const& fileType = "", std::string const& path = NULL_STR) { settings_t::set(key, std::string(str),                     fileType, path); }
 
@@ -54,13 +55,13 @@ private:
 	static char const* convert (std::string const& value, char const*)               { return value.c_str();                                   }
 
 	static std::string to_str (bool value)                      { return value ? "1" : "0";         }
-	static std::string to_str (int32_t value)                   { return text::format("%d", value); }
-	static std::string to_str (double value)                    { return text::format("%f", value); }
+	static std::string to_str (int32_t value)                   { return std::to_string(value);     }
+	static std::string to_str (double value)                    { return std::to_string(value);     }
 	static std::string to_str (std::string const& value)        { return value;                     }
 	static std::string to_str (char const* value)               { return value;                     }
 };
 
 PUBLIC settings_t settings_for_path (std::string const& path = NULL_STR, scope::scope_t const& scope = "", std::string const& directory = NULL_STR, std::map<std::string, std::string> variables = std::map<std::string, std::string>());
-PUBLIC std::map<std::string, std::string> variables_for_path (std::string const& documentPath = NULL_STR, scope::scope_t const& scope = "", std::map<std::string, std::string> existingVariables = std::map<std::string, std::string>());
+PUBLIC std::map<std::string, std::string> variables_for_path (std::map<std::string, std::string> const& base = std::map<std::string, std::string>(), std::string const& path = NULL_STR, scope::scope_t const& scope = "", std::string const& directory = NULL_STR);
 
 #endif /* end of include guard: SETTINGS_H_F99MMG5F */

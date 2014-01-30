@@ -1,6 +1,7 @@
 #include "keys.h"
 
 std::string const kSettingsFileTypeKey                    = "fileType";
+std::string const kSettingsRelatedFilePathKey             = "relatedFilePath";
 
 std::string const kSettingsTabSizeKey                     = "tabSize";
 std::string const kSettingsSoftTabsKey                    = "softTabs";
@@ -15,10 +16,10 @@ std::string const kSettingsSoftWrapKey                    = "softWrap";
 std::string const kSettingsWrapColumnKey                  = "wrapColumn";
 std::string const kSettingsShowWrapColumnKey              = "showWrapColumn";
 std::string const kSettingsShowInvisiblesKey              = "showInvisibles";
+std::string const kSettingsInvisiblesMapKey               = "invisiblesMap";
 
 std::string const kSettingsProjectDirectoryKey            = "projectDirectory";
 std::string const kSettingsSCMStatusKey                   = "scmStatus";
-std::string const kSettingsFileBrowserDocumentStatusKey   = "fileBrowserDocumentStatus";
 std::string const kSettingsWindowTitleKey                 = "windowTitle";
 std::string const kSettingsScopeAttributesKey             = "scopeAttributes";
 
@@ -27,6 +28,8 @@ std::string const kSettingsEncodingKey                    = "encoding";
 std::string const kSettingsUseBOMKey                      = "useBOM";
 std::string const kSettingsLineEndingsKey                 = "lineEndings";
 std::string const kSettingsStoreEncodingPerFileKey        = "storeEncodingPerFile";
+
+std::string const kSettingsFollowSymbolicLinksKey         = "followSymbolicLinks";
 
 std::string const kSettingsIncludeKey                     = "include";
 std::string const kSettingsIncludeDirectoriesKey          = "includeDirectories";

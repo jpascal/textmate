@@ -1,34 +1,34 @@
 #import "OakControl Private.h"
 #import "NSView Additions.h"
+#import "NSColor Additions.h"
 #import <oak/oak.h>
-#import <ns/attr_string.h>
 
 // The lineBreakMode parameter is here to work around a crash in CoreText <rdar://6940427> — fixed in 10.6
-static CFAttributedStringRef AttributedStringWithOptions (NSString* string, uint32_t options, NSLineBreakMode lineBreakMode = NSLineBreakByTruncatingTail)
+static NSAttributedString* AttributedStringWithOptions (NSString* string, uint32_t options, NSLineBreakMode lineBreakMode = NSLineBreakByTruncatingTail)
 {
-	ns::attr_string_t text;
-	text.add([NSFont controlContentFontOfSize:[NSFont smallSystemFontSize]]);
-	text.add(ns::style::line_break(lineBreakMode));
-	if(options & layer_t::shadow)
-	{
-		NSShadow* shadow = [[[NSShadow alloc] init] autorelease];
-		[shadow setShadowOffset:NSMakeSize(0, -1)];
-		[shadow setShadowBlurRadius:1.0];
-		[shadow setShadowColor:[NSColor colorWithCalibratedWhite:1.0 alpha:0.8]];
-		text.add(shadow);
-	}
-	text.add(string);
-	return text;
+	NSMutableParagraphStyle* paragraph = [NSMutableParagraphStyle new];
+	[paragraph setLineBreakMode:lineBreakMode];
+
+	NSDictionary* attr = @{
+		NSParagraphStyleAttributeName : paragraph,
+		NSFontAttributeName           : [NSFont controlContentFontOfSize:[NSFont smallSystemFontSize]]
+	};
+
+	return [[NSAttributedString alloc] initWithString:string attributes:attr];
 }
 
 double WidthOfText (NSString* string)
 {
 	double width = 0;
-
-	CTLineRef line = CTLineCreateWithAttributedString(AttributedStringWithOptions(string, 0));
-	width          = CTLineGetTypographicBounds(line, NULL, NULL, NULL);
-	CFRelease(line);
-
+	if(CFAttributedStringRef attrStr = (CFAttributedStringRef)CFBridgingRetain(AttributedStringWithOptions(string, 0)))
+	{
+		if(CTLineRef line = CTLineCreateWithAttributedString(attrStr))
+		{
+			width = CTLineGetTypographicBounds(line, NULL, NULL, NULL);
+			CFRelease(line);
+		}
+		CFRelease(attrStr);
+	}
 	return ceil(width);
 }
 
@@ -42,13 +42,20 @@ static void DrawTextWithOptions (NSString* string, NSRect bounds, uint32_t textO
 	CGMutablePathRef path = CGPathCreateMutable();
 	CGPathAddRect(path, NULL, bounds);
 
-	CTFramesetterRef framesetter = CTFramesetterCreateWithAttributedString(AttributedStringWithOptions(string, textOptions, bounds.size.width < 12 ? NSLineBreakByClipping : NSLineBreakByTruncatingTail));
+	CFAttributedStringRef attrStr = (CFAttributedStringRef)CFBridgingRetain(AttributedStringWithOptions(string, textOptions, bounds.size.width < 12 ? NSLineBreakByClipping : NSLineBreakByTruncatingTail));
+	if(!attrStr)
+		return;
+	CTFramesetterRef framesetter = CTFramesetterCreateWithAttributedString(attrStr);
+	CFRelease(attrStr);
 	if(!framesetter)
 		return;
 	CTFrameRef frame = CTFramesetterCreateFrame(framesetter, CFRangeMake(0, 0), path, NULL);
 	CFRelease(framesetter);
 	if(!frame)
 		return;
+
+	if(textOptions & layer_t::shadow)
+		CGContextSetShadowWithColor(context, NSMakeSize(0, -1), 1, [[NSColor colorWithCalibratedWhite:1 alpha:0.6] tmCGColor]);
 
 	CTFrameDraw(frame, context);
 
@@ -96,14 +103,14 @@ OAK_DEBUG_VAR(OakControl);
 			BOOL found = NO;
 			iterate(newLayer, aLayout)
 			{
-				if(newLayer->view.get() == oldLayer->view.get())
+				if(newLayer->view == oldLayer->view)
 				{
 					found = YES;
 					break;
 				}
 			}
 			if(!found)
-				[oldLayer->view.get() removeFromSuperview];
+				[oldLayer->view removeFromSuperview];
 		}
 	}
 
@@ -114,7 +121,7 @@ OAK_DEBUG_VAR(OakControl);
 	{
 		if(layer->color || layer->image && layer->requisite == layer_t::no_requisite)
 			coveredRect = NSUnionRect(coveredRect, layer->rect);
-		if(NSView* view = layer->view.get())
+		if(NSView* view = layer->view)
 		{
 			if([view superview] != self)
 				[view removeFromSuperview];
@@ -207,7 +214,7 @@ OAK_DEBUG_VAR(OakControl);
 {
 	if(aLayer.color)
 	{
-		[aLayer.color.get() set];
+		[aLayer.color set];
 		NSRectFill(aLayer.rect);
 	}
 
@@ -215,12 +222,12 @@ OAK_DEBUG_VAR(OakControl);
 	{
 		if(aLayer.image_options & layer_t::stretch)
 		{
-			[aLayer.image.get() drawInRect:aLayer.rect fromRect:NSZeroRect operation:NSCompositeCopy fraction:1.0];
+			[aLayer.image drawInRect:aLayer.rect fromRect:NSZeroRect operation:NSCompositeCopy fraction:1.0];
 		}
 		else
 		{
 			NSPoint origin = NSMakePoint(aLayer.rect.origin.x + aLayer.content_offset.x, aLayer.rect.origin.y + aLayer.content_offset.y);
-			[aLayer.image.get() drawAtPoint:origin fromRect:NSZeroRect operation:NSCompositeSourceOver fraction:1.0];
+			[aLayer.image drawAtPoint:origin fromRect:NSZeroRect operation:NSCompositeSourceOver fraction:1.0];
 		}
 	}
 
@@ -266,9 +273,9 @@ OAK_DEBUG_VAR(OakControl);
 	while(candidate)
 	{
 		if([candidate respondsToSelector:action])
-			return (void)[candidate performSelector:action withObject:self];
+			return (void)[NSApp sendAction:action to:candidate from:self];
 		else if([candidate respondsToSelector:@selector(delegate)] && [[candidate performSelector:@selector(delegate)] respondsToSelector:action])
-			return (void)[[candidate performSelector:@selector(delegate)] performSelector:action withObject:self];
+			return (void)[NSApp sendAction:action to:[candidate performSelector:@selector(delegate)] from:self];
 		candidate = [candidate nextResponder];
 	}
 }
@@ -395,7 +402,7 @@ struct rect_cmp_t
 			trackedLayers[it->rect].push_back(*it);
 
 		if(it->tool_tip)
-			[self addToolTipRect:it->rect owner:it->tool_tip.get() userData:NULL];
+			[self addToolTipRect:it->rect owner:it->tool_tip userData:NULL];
 	}
 
 	iterate(it, trackedLayers)
@@ -410,12 +417,11 @@ struct rect_cmp_t
 				break;
 			}
 		}
+
 		if(!(trackingOptions & NSTrackingActiveAlways))
 			trackingOptions |= NSTrackingActiveInKeyWindow;
 
-		NSTrackingArea* trackingArea = [[NSTrackingArea alloc] initWithRect:it->first options:trackingOptions owner:self userInfo:nil];
-		[self addTrackingArea:trackingArea];
-		[trackingArea release];
+		[self addTrackingArea:[[NSTrackingArea alloc] initWithRect:it->first options:trackingOptions owner:self userInfo:nil]];
 	}
 }
 
@@ -443,6 +449,7 @@ struct rect_cmp_t
 	[self clearTrackingRects];
 	if(newWindow)
 		[self setupTrackingRects];
+	[super viewWillMoveToWindow:newWindow];
 }
 
 - (void)setKeyState:(NSUInteger)newState

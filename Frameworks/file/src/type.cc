@@ -73,7 +73,7 @@ static std::string file_type_from_bytes (io::bytes_ptr const& bytes)
 				last = first_n_lines(first, last, lines_matched_by_regexp(*pattern));
 
 			if(regexp::match_t const& m = regexp::search(*pattern, first, last))
-				ordering.insert(std::make_pair(-m.end(), *item));
+				ordering.emplace(-m.end(), *item);
 		}
 	}
 	return ordering.empty() ? NULL_STR : file_type_from_grammars(std::vector<bundles::item_ptr>(1, ordering.begin()->second));
@@ -107,6 +107,10 @@ static std::string find_file_type (std::string const& path, io::bytes_ptr const&
 	// check if user has a fallback for unrecognized files (to override the “What is the file type of XXX?” prompt)
 	if(res == NULL_STR && effectivePath != NULL_STR)
 		res = settings_for_path(effectivePath, "attr.file.unknown-type " + pathAttributes, settingsDirectory).get(kSettingsFileTypeKey, NULL_STR);
+
+	// check if file has no extension, if so, treat it as plain text
+	if(res == NULL_STR && path::extension(effectivePath).empty())
+		res = "text.plain";
 
 	return res;
 }

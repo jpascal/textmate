@@ -5,6 +5,7 @@
 #include <regexp/regexp.h>
 #include <OakSystem/application.h>
 #include <oak/debug.h>
+#include <oak/compat.h>
 
 OAK_DEBUG_VAR(File_Auth);
 
@@ -20,7 +21,7 @@ static bool install_auth_tool (osx::authorization_t const& auth)
 	{
 		char const* arguments[] = { "--install", NULL };
 		FILE* fp = NULL;
-		if(AuthorizationExecuteWithPrivileges(auth, toolPath.c_str(), kAuthorizationFlagDefaults, (char**)arguments, &fp) == errAuthorizationSuccess)
+		if(oak::execute_with_privileges(auth, toolPath, kAuthorizationFlagDefaults, (char**)arguments, &fp) == errAuthorizationSuccess)
 		{
 			int status;
 			int pid = wait(&status);
@@ -39,8 +40,8 @@ static bool install_auth_tool (osx::authorization_t const& auth)
 static double version_of_tool (std::string const& toolPath)
 {
 	std::string res = io::exec(toolPath, "--version", NULL);
-	if(regexp::match_t const& m = regexp::search("\\A[^\\s]+ ([\\d.]+)", res.data(), res.data() + res.size()))
-		return strtod(res.c_str() + m.begin(1), NULL);
+	if(regexp::match_t const& m = regexp::search("\\A[^\\s]+ ([\\d.]+)", res))
+		return std::stod(m[1]);
 	return 0;
 }
 

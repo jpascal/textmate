@@ -43,7 +43,7 @@ struct socket_callback_t
 	{
 		D(DBF_RMateServer, bug("%p, %d\n", this, (int)fd););
 
-		helper.reset(new helper_t<F>(f, fd, this));
+		helper = std::make_shared<helper_t<F>>(f, fd, this);
 
 		CFSocketContext const context = { 0, helper.get(), NULL, NULL, NULL };
 		socket = CFSocketCreateWithNative(kCFAllocatorDefault, fd, kCFSocketReadCallBack, callback, &context);
@@ -88,9 +88,7 @@ private:
 		socket_callback_t* parent;
 	};
 
-	typedef std::shared_ptr<helper_base_t> helper_ptr;
-
-	helper_ptr helper;
+	std::shared_ptr<helper_base_t> helper;
 	CFSocketRef socket;
 	CFRunLoopSourceRef run_loop_source;
 };
@@ -145,7 +143,7 @@ namespace
 			else if(listen(fd, 5) == -1)
 				OakRunIOAlertPanel("Could not listen to socket");
 
-			_callback.reset(new socket_callback_t(&rmate_connection_handler_t, fd));
+			_callback = std::make_shared<socket_callback_t>(&rmate_connection_handler_t, fd);
 		}
 
 		~mate_server_t ()
@@ -161,49 +159,50 @@ namespace
 
 	struct rmate_server_t
 	{
-		rmate_server_t (uint32_t ip, uint16_t port) : _ip(ip), _port(port)
+		rmate_server_t (uint16_t port, bool listenForRemoteClients) : _port(port), _listen_for_remote_clients(listenForRemoteClients)
 		{
-			D(DBF_RMateServer, bug("%08ux %ud\n", _ip, _port););
+			D(DBF_RMateServer, bug("port %ud, remote clients %s\n", _port, BSTR(_listen_for_remote_clients)););
 
 			static int const on = 1;
-			socket_t fd(socket(AF_INET, SOCK_STREAM, 0));
+			socket_t fd(socket(AF_INET6, SOCK_STREAM, 0));
 			setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
 
 			fcntl(fd, F_SETFD, FD_CLOEXEC);
-			struct sockaddr_in iaddr = { sizeof(sockaddr_in), AF_INET, htons(_port), { htonl(_ip) } };
+			struct sockaddr_in6 iaddr = { sizeof(sockaddr_in6), AF_INET6, htons(_port) };
+			iaddr.sin6_addr   = listenForRemoteClients ? in6addr_any : in6addr_loopback;
 			if(-1 == bind(fd, (sockaddr*)&iaddr, sizeof(iaddr)))
 				fprintf(stderr, "bind(): %s\n", strerror(errno));
 			if(-1 == listen(fd, 5))
 				fprintf(stderr, "listen(): %s\n", strerror(errno));
 
-			_callback.reset(new socket_callback_t(&rmate_connection_handler_t, fd));
+			_callback = std::make_shared<socket_callback_t>(&rmate_connection_handler_t, fd);
 		}
 
 		~rmate_server_t ()
 		{
-			D(DBF_RMateServer, bug("%08ux %ud\n", _ip, _port););
+			D(DBF_RMateServer, bug("port %ud, remote clients %s\n", _port, BSTR(_listen_for_remote_clients)););
 		}
 
-		uint32_t ip () const   { return _ip; }
-		uint16_t port () const { return _port; }
+		uint16_t port () const                  { return _port; }
+		bool listen_for_remote_clients () const { return _listen_for_remote_clients; }
 
 	private:
-		uint32_t _ip;
 		uint16_t _port;
+		bool _listen_for_remote_clients;
 		socket_callback_ptr _callback;
 	};
 }
 
-void setup_rmate_server (bool enabled, uint32_t ip, uint16_t port)
+void setup_rmate_server (bool enabled, uint16_t port, bool listenForRemoteClients)
 {
 	static mate_server_t mate_server;
 
 	static std::shared_ptr<rmate_server_t> rmate_server;
-	if(!enabled || !rmate_server || ip != rmate_server->ip() || port != rmate_server->port())
+	if(!enabled || !rmate_server || port != rmate_server->port() || listenForRemoteClients != rmate_server->listen_for_remote_clients())
 	{
 		rmate_server.reset();
 		if(enabled)
-			rmate_server.reset(new rmate_server_t(ip, port));
+			rmate_server = std::make_shared<rmate_server_t>(port, listenForRemoteClients);
 	}
 }
 
@@ -241,7 +240,7 @@ struct record_t
 	{
 		if(!file)
 		{
-			file.reset(new temp_file_t);
+			file = std::make_shared<temp_file_t>();
 			arguments["data"] = std::string(*file);
 		}
 
@@ -359,10 +358,7 @@ namespace // wrap in anonymous namespace to avoid clashing with other callbacks 
 	{
 		WATCH_LEAKS(reactivate_callback_t);
 
-		struct helper_t { helper_t () : open_documents(0) { } size_t open_documents; WATCH_LEAKS(reactivate_callback_t); };
-		typedef std::shared_ptr<helper_t> helper_ptr;
-
-		reactivate_callback_t () : helper(helper_ptr(new helper_t))
+		reactivate_callback_t () : shared_count(std::make_shared<size_t>(0))
 		{
 			D(DBF_RMateServer, bug("%p\n", this););
 			GetFrontProcess(&psn);
@@ -370,19 +366,19 @@ namespace // wrap in anonymous namespace to avoid clashing with other callbacks 
 
 		void watch_document (document::document_ptr document)
 		{
-			++helper->open_documents;
+			++*shared_count;
 			document->add_callback(new reactivate_callback_t(*this));
 		}
 
 		void close_document (document::document_ptr document)
 		{
-			D(DBF_RMateServer, bug("%zu → %zu\n", helper->open_documents, helper->open_documents - 1););
-			if(--helper->open_documents == 0)
+			D(DBF_RMateServer, bug("%zu → %zu\n", *shared_count, *shared_count - 1););
+			if(--*shared_count == 0)
 				SetFrontProcess(&psn);
 		}
 
 	private:
-		helper_ptr helper;
+		std::shared_ptr<size_t> shared_count;
 		struct ProcessSerialNumber psn;
 	};
 }
@@ -468,7 +464,7 @@ struct socket_observer_t
 				}
 				else
 				{
-					records.push_back(record_t(str));
+					records.emplace_back(str);
 					state = arguments;
 				}
 				D(DBF_RMateServer, bug("Got command ‘%s’\n", str.c_str()););
@@ -496,7 +492,7 @@ struct socket_observer_t
 					{
 						D(DBF_RMateServer, bug("Got argument: %s = %s\n", key.c_str(), value.c_str()););
 						if(!value.empty())
-							records.back().arguments.insert(std::make_pair(key, value));
+							records.back().arguments.emplace(key, value);
 					}
 				}
 			}

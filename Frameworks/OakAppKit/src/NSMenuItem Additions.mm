@@ -4,6 +4,7 @@
 #import <OakFoundation/NSString Additions.h>
 #import <text/case.h>
 #import <text/utf8.h>
+#import <ns/ns.h>
 
 @interface MenuMutableAttributedString : NSMutableAttributedString
 {
@@ -58,12 +59,6 @@
 	return copy;
 }
 
-- (void)dealloc
-{
-	[contents release];
-	[super dealloc];
-}
-
 // NOTE: AppKit additions produce invalid values here, provide our own implementation
 
 - (NSRect)boundingRectWithSize:(NSSize)aSize options:(NSStringDrawingOptions)options
@@ -77,20 +72,20 @@
 {
 	CGSize stringSize = [string sizeWithAttributes:@{ NSFontAttributeName : font }];
 
-	NSTextTableBlock* block = [[[NSTextTableBlock alloc] initWithTable:table startingRow:row rowSpan:1 startingColumn:column columnSpan:1] autorelease];
+	NSTextTableBlock* block = [[NSTextTableBlock alloc] initWithTable:table startingRow:row rowSpan:1 startingColumn:column columnSpan:1];
 
 	if(column > 0)
 		[block setContentWidth:stringSize.width type:NSTextBlockAbsoluteValueType];
 
 	block.verticalAlignment = verticalAlignment;
 
-	NSMutableParagraphStyle* paragraphStyle = [[[NSMutableParagraphStyle alloc] init] autorelease];
+	NSMutableParagraphStyle* paragraphStyle = [NSMutableParagraphStyle new];
 	[paragraphStyle setTextBlocks:@[ block ]];
 	[paragraphStyle setAlignment:textAlignment];
 
 	string = [string stringByAppendingString:@"\n"];
 
-	NSMutableAttributedString* cellString = [[[NSMutableAttributedString alloc] initWithString:string] autorelease];
+	NSMutableAttributedString* cellString = [[NSMutableAttributedString alloc] initWithString:string];
 	[cellString addAttribute:NSParagraphStyleAttributeName value:paragraphStyle range:NSMakeRange(0, [cellString length])];
 	[cellString addAttribute:NSFontAttributeName value:font range:NSMakeRange(0, [cellString length])];
 
@@ -108,6 +103,9 @@
 
 @end
 
+static char const* kOakMenuItemKeyEquivalent = "OakMenuItemKeyEquivalent";
+static char const* kOakMenuItemTabTrigger    = "OakMenuItemTabTrigger";
+
 @implementation NSMenuItem (FileIcon)
 - (void)setIconForFile:(NSString*)path;
 {
@@ -124,6 +122,33 @@
 		[icon setSize:NSMakeSize(16, 16)];
 		[self setImage:icon];
 	}
+}
+
+- (void)setActivationString:(NSString*)anActivationString withFont:(NSFont*)aFont
+{
+	MenuMutableAttributedString* attributedTitle = [MenuMutableAttributedString new];
+	NSTextTable* table = [NSTextTable new];
+	[table setNumberOfColumns:2];
+
+	NSFont* font = self.menu.font ?: [NSFont menuFontOfSize:0];
+	[attributedTitle appendTableCellWithString:self.title table:table textAlignment:NSLeftTextAlignment verticalAlignment:NSTextBlockMiddleAlignment font:font row:0 column:0];
+	[attributedTitle appendTableCellWithString:anActivationString table:table textAlignment:NSRightTextAlignment verticalAlignment:aFont && aFont.pointSize >= 13 ? NSTextBlockBottomAlignment : NSTextBlockMiddleAlignment font:(aFont ?: font) row:0 column:1];
+
+	NSString* plainTitle = self.title;
+	self.attributedTitle = attributedTitle;
+	self.title = plainTitle;
+}
+
+- (void)updateTitle:(NSString*)newTitle
+{
+	if([self.title isEqualToString:newTitle])
+		return;
+
+	self.title = newTitle;
+	if(NSString* keyEquivalent = objc_getAssociatedObject(self, kOakMenuItemKeyEquivalent))
+		[self setInactiveKeyEquivalentCxxString:to_s(keyEquivalent)];
+	if(NSString* tabTrigger = objc_getAssociatedObject(self, kOakMenuItemTabTrigger))
+		[self setTabTriggerCxxString:to_s(tabTrigger)];
 }
 
 - (void)setKeyEquivalentCxxString:(std::string const&)aKeyEquivalent
@@ -157,31 +182,24 @@
 	[self setKeyEquivalentModifierMask:modifiers];
 }
 
+- (void)setInactiveKeyEquivalentCxxString:(std::string const&)aKeyEquivalent
+{
+	objc_setAssociatedObject(self, kOakMenuItemKeyEquivalent, [NSString stringWithCxxString:aKeyEquivalent], OBJC_ASSOCIATION_RETAIN);
+	if(aKeyEquivalent != NULL_STR && !aKeyEquivalent.empty())
+		[self setActivationString:[NSString stringWithCxxString:" " + ns::glyphs_for_event_string(aKeyEquivalent)] withFont:nil];
+}
+
 - (void)setTabTriggerCxxString:(std::string const&)aTabTrigger
 {
-	if(aTabTrigger == NULL_STR)
-		return;
-
-	MenuMutableAttributedString* attributedTitle = [[[MenuMutableAttributedString alloc] init] autorelease];
-	NSTextTable* table = [[[NSTextTable alloc] init] autorelease];
-	[table setNumberOfColumns:2];
-
-	NSFont* font = self.menu.font ?: [NSFont menuFontOfSize:0];
-	[attributedTitle appendTableCellWithString:self.title table:table textAlignment:NSLeftTextAlignment verticalAlignment:NSTextBlockMiddleAlignment font:font row:0 column:0];
-	[attributedTitle appendTableCellWithString:[NSString stringWithCxxString:(" "+aTabTrigger+"⇥")] table:table textAlignment:NSRightTextAlignment
-		verticalAlignment:font.pointSize >= 13 ? NSTextBlockBottomAlignment : NSTextBlockMiddleAlignment
-		font:[NSFont menuBarFontOfSize:floor(font.pointSize * 0.85)] row:0 column:1];
-	NSString* plainTitle = self.title;
-	self.attributedTitle = attributedTitle;
-	self.title = plainTitle;
+	objc_setAssociatedObject(self, kOakMenuItemTabTrigger, [NSString stringWithCxxString:aTabTrigger], OBJC_ASSOCIATION_RETAIN);
+	if(aTabTrigger != NULL_STR)
+		[self setActivationString:[NSString stringWithCxxString:(" "+aTabTrigger+"⇥")] withFont:[NSFont menuBarFontOfSize:floor([(self.menu.font ?: [NSFont menuFontOfSize:0]) pointSize] * 0.85)]];
 }
 
 - (void)setModifiedState:(BOOL)flag
 {
 	if(NSImage* image = [NSImage imageNamed:@"NSMenuItemBullet"])
-	{
 		[self setMixedStateImage:image];
-		[self setState:NSMixedState];
-	}
+	[self setState:flag ? NSMixedState : NSOffState];
 }
 @end

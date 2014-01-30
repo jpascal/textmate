@@ -178,6 +178,11 @@ namespace path
 		return !path.empty() && path[0] == '/' ? normalize(path) : normalize(base + "/" + path);
 	}
 
+	std::string join (std::initializer_list<std::string> const& components)
+	{
+		return normalize(text::join(components, "/"));
+	}
+
 	bool is_absolute (std::string const& path)
 	{
 		if(!path.empty() && path[0] == '/')
@@ -187,6 +192,13 @@ namespace path
 				return true;
 		}
 		return false;
+	}
+
+	bool is_child (std::string const& nonNormalizedChild, std::string const& nonNormalizedParent)
+	{
+		std::string const child  = normalize(nonNormalizedChild);
+		std::string const parent = normalize(nonNormalizedParent);
+		return child.find(parent) == 0 && (parent.size() == child.size() || child[parent.size()] == '/');
 	}
 
 	std::string with_tilde (std::string const& p)
@@ -249,7 +261,7 @@ namespace path
 
 	static std::string resolve_links (std::string const& p, bool resolveParent, std::set<std::string>& seen)
 	{
-		if(p == "/" || p == NULL_STR || p.empty() || p[0] != '/')
+		if(p == "/" || !path::is_absolute(p))
 			return p;
 
 		if(seen.find(p) != seen.end())
@@ -308,7 +320,7 @@ namespace path
 
 	bool is_executable (std::string const& path)
 	{
-		return path != NULL_STR && access(path.c_str(), X_OK) == 0;
+		return path != NULL_STR && access(path.c_str(), X_OK) == 0 && !path::is_directory(path);
 	}
 
 	bool exists (std::string const& path)
@@ -364,62 +376,6 @@ namespace path
 		FSCatalogInfo catalogInfo;
 		((FileInfo*)&catalogInfo.finderInfo)->finderFlags = (finder_flags(path) & ~kColor) | (labelIndex << 1);
 		return noErr == FSSetCatalogInfo(fsref_t(path), kFSCatInfoFinderInfo, &catalogInfo);
-	}
-
-	// ==============
-	// = Identifier =
-	// ==============
-
-	identifier_t::identifier_t (bool exists, dev_t device, ino_t inode, std::string const& path) : exists(exists), device(device), inode(inode), path(path)
-	{
-	}
-
-	identifier_t::identifier_t (std::string const& path, bool r) : exists(false), path(r ? resolve(path) : normalize(path))
-	{
-		struct stat buf;
-		if(lstat(this->path.c_str(), &buf) == 0)
-		{
-			exists = true;
-			device = buf.st_dev;
-			inode  = buf.st_ino;
-		}
-	}
-
-	bool identifier_t::operator< (identifier_t const& rhs) const
-	{
-		if(exists == rhs.exists)
-		{
-			if(exists)
-					return device == rhs.device ? inode < rhs.inode : device < rhs.device;
-			else	return path < rhs.path;
-		}
-		return !exists && rhs.exists;
-	}
-
-	bool identifier_t::operator== (identifier_t const& rhs) const
-	{
-		return exists && rhs.exists ? device == rhs.device && inode == rhs.inode : path == rhs.path;
-	}
-
-	bool identifier_t::operator!= (identifier_t const& rhs) const
-	{
-		return !(*this == rhs);
-	}
-
-	identifier_t identifier (std::string const& path)
-	{
-		return identifier_t(path);
-	}
-
-	std::string to_s (identifier_t const& identifier)
-	{
-		std::string res = with_tilde(identifier.path);
-		if(res == NULL_STR)
-			return "(null)";
-		if(identifier.exists)
-				res += text::format(" (inode %ld)", (long)identifier.inode);
-		else  res += " (not on disk)";
-		return res;
 	}
 
 	// ========
@@ -484,6 +440,8 @@ namespace path
 	uint32_t info (std::string const& path, uint32_t mask)
 	{
 		uint32_t res = 0;
+		if(path == NULL_STR)
+			return res;
 
 		std::string const& name = path::name(path);
 		if(name == ".")
@@ -617,47 +575,55 @@ namespace path
 		return res;
 	}
 
-	static std::string folder_with_n_parents (std::string const& path, size_t components)
+	static size_t count_slashes (std::string const& s1, std::string const& s2)
 	{
-		std::string::const_reverse_iterator const& last = path.rend();
-		std::string::const_reverse_iterator from        = std::find(path.rbegin(), last, '/');
-		for(; components > 0 && from != last; --components)
-			from = std::find(++from, last, '/');
-		return std::string(from.base(), path.end());
+		auto s1First = s1.rbegin(), s1Last = s1.rend();
+		auto s2First = s2.rbegin(), s2Last = s2.rend();
+		while(s1First != s1Last && s2First != s2Last)
+		{
+			if(*s1First != *s2First)
+				break;
+			++s1First, ++s2First;
+		}
+		return std::count(s1.rbegin(), s1First, '/');
 	}
 
 	std::vector<size_t> disambiguate (std::vector<std::string> const& paths)
 	{
-		std::map<std::string, size_t> unique;
-		iterate(it, paths)
-			++unique[*it];
+		std::vector<size_t> v(paths.size());
+		std::iota(v.begin(), v.end(), 0);
 
-		std::vector<size_t> redo;
-		for(size_t i = 0; i < paths.size(); ++i)
-			redo.push_back(i);
-
-		std::vector<size_t> levels(paths.size(), 0);
-		while(!redo.empty())
-		{
-			std::map< std::string, std::vector<size_t> > map;
-			iterate(it, redo)
-				map[folder_with_n_parents(paths[*it], levels[*it])].push_back(*it);
-			redo.clear();
-
-			iterate(it, map)
+		std::sort(v.begin(), v.end(), [&paths](size_t const& lhs, size_t const& rhs) -> bool {
+			auto s1First = paths[lhs].rbegin(), s1Last = paths[lhs].rend();
+			auto s2First = paths[rhs].rbegin(), s2Last = paths[rhs].rend();
+			while(s1First != s1Last && s2First != s2Last)
 			{
-				if(it->second.size() > 1)
-				{
-					if(it->second.size() == unique[paths[it->second.back()]])
-						continue;
-
-					iterate(innerIter, it->second)
-					{
-						++levels[*innerIter];
-						redo.push_back(*innerIter);
-					}
-				}
+				if(*s1First < *s2First)
+					return true;
+				else if(*s1First != *s2First)
+					return false;
+				++s1First, ++s2First;
 			}
+			return s1First == s1Last && s2First != s2Last;
+		});
+
+		std::vector<size_t> levels(paths.size());
+		for(size_t i = 0; i < v.size(); )
+		{
+			std::string const& current = paths[v[i]];
+			size_t above = 0, below = 0;
+
+			if(i != 0)
+				above = count_slashes(current, paths[v[i-1]]);
+
+			size_t j = i;
+			while(j < v.size() && current == paths[v[j]])
+				++j;
+			if(j < v.size())
+				below = count_slashes(current, paths[v[j]]);
+
+			for(; i < j; ++i)
+				levels[v[i]] = std::max(above, below);
 		}
 
 		return levels;
@@ -672,7 +638,7 @@ namespace path
 		std::string base = name(strip_extension(requestedPath));
 		std::string ext  = extension(requestedPath);
 
-		if(regexp::match_t const& m = regexp::search(" \\d+$", base.data(), base.data() + base.size()))
+		if(regexp::match_t const& m = regexp::search(" \\d+$", base))
 			base.erase(m.begin());
 		if(suffix != "" && base.size() > suffix.size() && base.find(suffix) == base.size() - suffix.size())
 			base.erase(base.size() - suffix.size());
@@ -687,77 +653,13 @@ namespace path
 		return NULL_STR;
 	}
 
-	// ==========
-	// = Walker =
-	// ==========
-
-	void walker_t::rebalance () const
-	{
-		while(files.empty() && !paths.empty())
-		{
-			struct dirent** entries;
-			int size = scandir(paths.front().c_str(), &entries, NULL, NULL);
-			if(size != -1)
-			{
-				for(int i = 0; i < size; ++i)
-				{
-					std::string const& name = entries[i]->d_name;
-					if(name != "." && name != "..")
-					{
-						std::string const& path = join(paths.front(), name);
-						if(seen.insert(identifier(path)).second)
-							files.push_back(path);
-					}
-					free(entries[i]);
-				}
-				free(entries);
-			}
-			paths.erase(paths.begin());
-		}
-	}
-
-	void walker_t::push_back (std::string const& dir)
-	{
-		paths.push_back(dir);
-		rebalance();
-	}
-
-	bool walker_t::equal (size_t lhs, size_t rhs) const
-	{
-		if(paths.empty())
-				return std::min(lhs, files.size()) == std::min(rhs, files.size());
-		else	return lhs == rhs;
-	}
-
-	std::string const& walker_t::at (size_t index) const
-	{
-		ASSERT_LT(index, files.size());
-		return files[index];
-	}
-
-	size_t walker_t::advance_from (size_t index) const
-	{
-		if(index + 1 == files.size())
-		{
-			files.clear();
-			rebalance();
-			return 0;
-		}
-		return index + 1;
-	}
-
 	// ===========
 	// = Actions =
 	// ===========
 
-	walker_ptr open_for_walk (std::string const& path, std::string const& glob)
-	{
-		return walker_ptr(new walker_t(path, glob));
-	}
-
 	std::string content (std::string const& path)
 	{
-		int fd = open(path.c_str(), O_RDONLY);
+		int fd = open(path.c_str(), O_RDONLY|O_CLOEXEC);
 		if(fd == -1)
 			return NULL_STR;
 
@@ -776,7 +678,7 @@ namespace path
 	{
 		intermediate_t dest(path);
 
-		int fd = open(dest, O_CREAT|O_TRUNC|O_WRONLY, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
+		int fd = open(dest, O_CREAT|O_TRUNC|O_WRONLY|O_CLOEXEC, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
 		if(fd == -1)
 			return false;
 
@@ -812,7 +714,7 @@ namespace path
 	{
 		std::map<std::string, std::string> res;
 
-		int fd = open(path.c_str(), O_RDONLY);
+		int fd = open(path.c_str(), O_RDONLY|O_CLOEXEC);
 		if(fd != -1)
 		{
 			ssize_t listSize = flistxattr(fd, NULL, 0, 0);
@@ -827,9 +729,9 @@ namespace path
 						ssize_t size = fgetxattr(fd, mem + i, NULL, 0, 0, 0);
 						if(size > 0)
 						{
-							char value[size];
-							if(fgetxattr(fd, mem + i, value, size, 0, 0) == size)
-								res.insert(std::make_pair(mem + i, std::string(value, value + size)));
+							std::string value(size, '\0');
+							if(fgetxattr(fd, mem + i, &value.front(), value.size(), 0, 0) == size)
+								res.emplace(mem + i, value);
 							else
 								perror(("fgetxattr(" + path + ", " + (mem+i) + ")").c_str());
 						}
@@ -860,28 +762,25 @@ namespace path
 		if(attributes.empty())
 			return true;
 
-		int fd = open(path.c_str(), O_RDONLY);
+		int fd = open(path.c_str(), O_RDONLY|O_CLOEXEC);
 		if(fd != -1)
 		{
 			res = true;
 			iterate(pair, attributes)
 			{
-				bool removeAttr = pair->second == NULL_STR;
 				int rc = 0;
-				if(removeAttr)
+				if(pair->second == NULL_STR)
 						rc = fremovexattr(fd, pair->first.c_str(), 0);
 				else	rc = fsetxattr(fd, pair->first.c_str(), pair->second.data(), pair->second.size(), 0, 0);
 
-				if(rc != 0 && removeAttr && errno == ENOATTR)
-					rc = 0;
-				else if(rc != 0 && removeAttr && errno == EINVAL) // We get this from AFP when removing a non-existing attribute
-					rc = 0;
-				else if(rc != 0 && !removeAttr && errno == ENOENT) // We get this from Samba saving to ext4 via virtual machine
-					rc = 0;
-				else if(rc != 0)
-					perror((removeAttr ? text::format("fremovexattr(%d, \"%s\")", fd, pair->first.c_str()) : text::format("fsetxattr(%d, %s, \"%s\")", fd, pair->first.c_str(), pair->second.c_str())).c_str());
-
-				res = res && rc == 0;
+				if(rc != 0 && errno != ENOTSUP && errno != ENOATTR)
+				{
+					// We only log the error since:
+					// fremovexattr() on AFP for non-existing attributes gives us EINVAL
+					// fsetxattr() on Samba saving to ext4 via virtual machine gives us ENOENT
+					// sshfs with ‘-o noappledouble’ will return ENOATTR or EPERM
+					perror((pair->second == NULL_STR ? text::format("fremovexattr(%d, \"%s\")", fd, pair->first.c_str()) : text::format("fsetxattr(%d, %s, \"%s\")", fd, pair->first.c_str(), pair->second.c_str())).c_str());
+				}
 			}
 			close(fd);
 		}
@@ -938,7 +837,8 @@ namespace path
 		if(path != NULL_STR && !exists(path))
 		{
 			make_dir(parent(path));
-			mkdir(path.c_str(), S_IRUSR|S_IWUSR|S_IXUSR|S_IRGRP|S_IWGRP|S_IXGRP|S_IROTH|S_IWOTH|S_IXOTH);
+			if(mkdir(path.c_str(), S_IRUSR|S_IWUSR|S_IXUSR|S_IRGRP|S_IWGRP|S_IXGRP|S_IROTH|S_IWOTH|S_IXOTH) == -1)
+				perror(text::format("mkdir(“%s”)", path.c_str()).c_str());
 		}
 		return exists(path) && info(resolve(path)) & flag::directory;
 	}
@@ -1032,6 +932,19 @@ namespace path
 		return FSFindFolder(info.volume, kTrashFolderType, false, &res) == noErr ? to_s(res) : NULL_STR;;
 	}
 
+	static std::string temp_file_in_directory (std::string const& path, std::string const& file)
+	{
+		if(file == NULL_STR)
+			return path;
+
+		std::string res = path::join(path, std::string(getprogname() ?: "untitled") + "_" + file + ".XXXXXX");
+		res.c_str(); // ensure the buffer is zero terminated, should probably move to a better approach
+		mktemp(&res[0]);
+
+		D(DBF_IO_Path, bug("%s\n", res.c_str()););
+		return res;
+	}
+
 	std::string temp (std::string const& file)
 	{
 		std::string str(128, ' ');
@@ -1040,14 +953,18 @@ namespace path
 				str.resize(len - 1);
 		else	str = getenv("TMPDIR") ?: "/tmp";
 
-		if(file != NULL_STR)
-		{
-			str = path::join(str, std::string(getprogname() ?: "untitled") + "_" + file + ".XXXXXX");
-			str.c_str(); // ensure the buffer is zero terminated, should probably move to a better approach
-			mktemp(&str[0]);
-		}
-		D(DBF_IO_Path, bug("%s\n", str.c_str()););
-		return str;
+		return temp_file_in_directory(str, file);
+	}
+
+	std::string cache (std::string const& file)
+	{
+		std::string str(128, ' ');
+		size_t len = confstr(_CS_DARWIN_USER_CACHE_DIR, &str[0], str.size());
+		if(0 < len && len < 128) // if length is 128 the path was truncated and unusable
+				str.resize(len - 1);
+		else	str = path::temp();
+
+		return temp_file_in_directory(str, file);
 	}
 
 	std::string desktop ()

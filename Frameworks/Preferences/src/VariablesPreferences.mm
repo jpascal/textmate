@@ -1,8 +1,6 @@
 #import "VariablesPreferences.h"
 #import "Keys.h"
 #import <OakAppKit/NSImage Additions.h>
-#import <OakFoundation/OakFoundation.h>
-#import <plist/ascii.h>
 #import <ns/ns.h>
 
 @interface VariablesPreferences ()
@@ -28,7 +26,7 @@
 - (IBAction)addVariable:(id)sender
 {
 	NSDictionary* entry = @{
-		@"enabled" : YES_obj,
+		@"enabled" : @YES,
 		@"name"    : @"VARIABLE_NAME",
 		@"value"   : @"variable value",
 	};
@@ -37,6 +35,7 @@
 	[_variables insertObject:entry atIndex:pos];
 	[[NSUserDefaults standardUserDefaults] setObject:[_variables copy] forKey:kUserDefaultsEnvironmentVariablesKey];
 	[variablesTableView reloadData];
+	[variablesTableView selectRowIndexes:[NSIndexSet indexSetWithIndex:pos] byExtendingSelection:NO];
 	[variablesTableView editColumn:1 row:pos withEvent:nil select:YES];
 }
 

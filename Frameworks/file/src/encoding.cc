@@ -20,6 +20,12 @@ std::string const kCharsetUnknown    = "UNKNOWN";
 
 namespace encoding
 {
+	bool type::supports_byte_order_mark (std::string const& charset)
+	{
+		static std::set<std::string> const Encodings = { kCharsetUTF8, kCharsetUTF16BE, kCharsetUTF16LE, kCharsetUTF32BE, kCharsetUTF32LE };
+		return Encodings.find(charset) != Encodings.end();
+	}
+
 	io::bytes_ptr convert (io::bytes_ptr content, std::string const& from, std::string const& to)
 	{
 		io::bytes_ptr res;
@@ -58,7 +64,7 @@ namespace encoding
 		{
 			ASSERT(to != kCharsetUTF8 || utf8::is_valid(buffer.begin(), buffer.end()));
 			buffer.resize(buffer_contains);
-			res.reset(new io::bytes_t(buffer));
+			res = std::make_shared<io::bytes_t>(buffer);
 		}
 
 		return res;

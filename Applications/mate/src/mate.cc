@@ -5,7 +5,7 @@
 #include <cf/cf.h>
 #include <io/path.h>
 
-static double const AppVersion  = 2.3;
+static double const AppVersion  = 2.4;
 static size_t const AppRevision = APP_REVISION;
 
 static char const* socket_path ()
@@ -74,7 +74,7 @@ static bool find_app (FSRef* outAppRef, std::string* outAppStr)
 	return err == noErr;
 }
 
-static void launch_app ()
+static void launch_app (bool disableUntitled)
 {
 	disable_sudo_helper_t helper;
 
@@ -82,11 +82,9 @@ static void launch_app ()
 	if(!find_app(&appFSRef, NULL))
 		abort();
 
-	std::map<std::string, std::string> tmp;
-	tmp["OAK_DISABLE_UNTITLED_FILE"] = "YES";
-	cf::dictionary_t environment(tmp);
+	cf::array_t args(disableUntitled ? std::vector<std::string>{ "-disableNewDocumentAtStartup", "1" } : std::vector<std::string>{ });
 
-	struct LSApplicationParameters const appParams = { 0, kLSLaunchDontAddToRecents|kLSLaunchDontSwitch|kLSLaunchAndDisplayErrors, &appFSRef, NULL, environment, NULL, NULL };
+	struct LSApplicationParameters const appParams = { 0, kLSLaunchDontAddToRecents|kLSLaunchDontSwitch|kLSLaunchAndDisplayErrors, &appFSRef, NULL, NULL, args, NULL };
 	OSStatus err = LSOpenApplication(&appParams, NULL);
 	if(err != noErr)
 	{
@@ -142,8 +140,7 @@ static void usage (FILE* io)
 		" -t, --type <filetype>  Treat file as having <filetype>.\n"
 		" -m, --name <name>      The display name shown in TextMate.\n"
 		" -r, --recent           Add file to Open Recent menu.\n"
-		" -d, --change-dir       Change TextMates working directory to that of the file.\n"
-		" -n, --no-reactivation  After edit with -w, do not re-activate the calling app.\n"
+		" -d, --change-dir       Change TextMate's working directory to that of the file.\n"
 		" -h, --help             Show this information.\n"
 		" -v, --version          Print version information.\n"
 		"\n"
@@ -245,7 +242,7 @@ int main (int argc, char* argv[])
 		if(path[0] == 0)
 			continue;
 
-		if(strcmp(path, "-") != 0 && path[0] != '/') // relative path, make absolute
+		if(strcmp(path, "-") != 0 && !path::is_absolute(path)) // relative path, make absolute
 		{
 			if(char* cwd = getcwd(NULL, (size_t)-1))
 			{
@@ -277,7 +274,7 @@ int main (int argc, char* argv[])
 	while(-1 == connect(fd, (sockaddr*)&addr, sizeof(addr)))
 	{
 		if(!didLaunch)
-			launch_app();
+			launch_app(!files.empty());
 		didLaunch = true;
 		usleep(500000);
 	}
@@ -301,7 +298,7 @@ int main (int argc, char* argv[])
 			{
 				if(len == -1)
 					break;
-				write_key_pair(fd, "data", text::format("%zu", len));
+				write_key_pair(fd, "data", std::to_string(len));
 				write(fd, buf, len);
 			}
 

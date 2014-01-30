@@ -4,6 +4,7 @@
 #include <oak/misc.h>
 
 PUBLIC extern std::string const kSettingsFileTypeKey;
+PUBLIC extern std::string const kSettingsRelatedFilePathKey;
 
 PUBLIC extern std::string const kSettingsTabSizeKey;
 PUBLIC extern std::string const kSettingsSoftTabsKey;
@@ -18,10 +19,10 @@ PUBLIC extern std::string const kSettingsSoftWrapKey;
 PUBLIC extern std::string const kSettingsWrapColumnKey;
 PUBLIC extern std::string const kSettingsShowWrapColumnKey;
 PUBLIC extern std::string const kSettingsShowInvisiblesKey;
+PUBLIC extern std::string const kSettingsInvisiblesMapKey;
 
 PUBLIC extern std::string const kSettingsProjectDirectoryKey;
 PUBLIC extern std::string const kSettingsSCMStatusKey;
-PUBLIC extern std::string const kSettingsFileBrowserDocumentStatusKey;
 PUBLIC extern std::string const kSettingsWindowTitleKey;
 PUBLIC extern std::string const kSettingsScopeAttributesKey;
 
@@ -30,6 +31,8 @@ PUBLIC extern std::string const kSettingsEncodingKey;
 PUBLIC extern std::string const kSettingsUseBOMKey;
 PUBLIC extern std::string const kSettingsLineEndingsKey;
 PUBLIC extern std::string const kSettingsStoreEncodingPerFileKey;
+
+PUBLIC extern std::string const kSettingsFollowSymbolicLinksKey;
 
 PUBLIC extern std::string const kSettingsIncludeKey;
 PUBLIC extern std::string const kSettingsIncludeDirectoriesKey;

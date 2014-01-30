@@ -1,17 +1,20 @@
-theme    = '71D40D9D-AE48-11D9-920A-000D93589AF6'
+theme    = '766026CB-703D-4610-B070-8DE07D967C5F'
 fontName = 'Menlo-Regular'
 fontSize = 12
+encoding = "UTF-8"
 
 exclude  = "{*.{o,pyc},Icon\r,CVS,_darcs,_MTN,\{arch\},blib,*~.nib}"
 include  = "{*,.tm_properties,.htaccess}"
-binary   = "{*.{ai,gif,icns,ico,jpg,jpeg,m4v,nib,o,pdf,png,psd,pyc,rtf,scssc,tif,tiff,xib},Icon\r}"
+binary   = "{*.{ai,bz2,gif,gz,icns,ico,jpg,jpeg,m4v,nib,o,pdf,png,psd,pyc,rtf,scssc,tar,tbz,tgz,tif,tiff,xib,zip},Icon\r}"
 
-windowTitleSCM = '${TM_SCM_BRANCH:+ ($TM_SCM_NAME: $TM_SCM_BRANCH)}'
-windowTitle    = '$TM_DISPLAYNAME$windowTitleSCM'
+windowTitleSCM     = '${TM_SCM_BRANCH:+ ($TM_SCM_NAME: $TM_SCM_BRANCH)}'
+windowTitleProject = '${projectDirectory:+ — ${projectDirectory/^.*\///}}'
+windowTitle        = '$TM_DISPLAYNAME$windowTitleProject$windowTitleSCM'
 
 LANG        = "en_US.UTF-8"
 LC_CTYPE    = "en_US.UTF-8"
 TM_APP_PATH = "${CWD/\/Contents\/Resources$//}"
+TM_MATE     = "$CWD/mate"
 TM_QUERY    = "$CWD/tm_query"
 
 [ attr.untitled ]
@@ -46,3 +49,9 @@ encoding         = "MACROMAN"
 
 [ "{BUILD,README,INSTALL,LICENSE,COPYING,TODO}" ]
 fileType         = "text.plain"
+
+[ *.go ]
+relatedFilePath  = "${TM_FILEPATH/(?=\.go$)/_test/}"
+
+[ *_test.go ]
+relatedFilePath  = "${TM_FILEPATH/_test(?=\.go$)//}"

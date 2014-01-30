@@ -1,5 +1,4 @@
 #include "save.h"
-#include "constants.h"
 #include "status.h"
 #include "encoding.h"
 #include "filter.h"
@@ -9,6 +8,7 @@
 #include <io/intermediate.h>
 #include <io/path.h>
 #include <text/trim.h>
+#include <text/newlines.h>
 #include <settings/settings.h>
 #include <command/parser.h>
 #include <oak/debug.h>
@@ -29,12 +29,13 @@ namespace
 			if(_state != kStateDone)
 			{
 				ASSERT(!_saved);
-				_callback->did_save(_path, _content, _path_attributes, _encoding, _saved, _error, _filter);
+				_callback->did_save(_path, _content, _encoding, _saved, _error, _filter);
 			}
 		}
 
 		void set_path (std::string const& path)                   { _path = path;                     proceed(); }
 		void set_make_writable (bool flag)                        { _make_writable = flag;            proceed(); }
+		void set_create_parent (bool flag)                        { _create_parent = flag;            proceed(); }
 		void set_authorization (osx::authorization_t auth)        { _authorization = auth;            proceed(); }
 		void set_content (io::bytes_ptr content)                  { _content = content;               proceed(); }
 		void set_charset (std::string const& charset)             { _encoding.set_charset(charset);   proceed(); }
@@ -75,6 +76,7 @@ namespace
 		state_t                              _state;
 		state_t                              _next_state;
 		bool                                 _make_writable;
+		bool                                 _create_parent = false;
 		bool                                 _saved;
 
 		file::save_callback_ptr              _callback;
@@ -157,7 +159,7 @@ namespace file
 
 			path::intermediate_t dest(request.path);
 
-			int fd = open(dest, O_CREAT|O_TRUNC|O_WRONLY, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
+			int fd = open(dest, O_CREAT|O_TRUNC|O_WRONLY|O_CLOEXEC, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH);
 			if(fd == -1)
 				error = text::format("open(\"%s\"): %s", (char const*)dest, strerror(errno));
 			else if(write(fd, request.bytes->get(), request.bytes->size()) != request.bytes->size())
@@ -250,6 +252,20 @@ namespace
 						break;
 
 						case kFileTestNoParent:
+						{
+							if(_create_parent)
+							{
+								if(path::make_dir(path::parent(_path)))
+									proceed();
+							}
+							else
+							{
+								_next_state = kStateMakeWritable;
+								_callback->select_create_parent(_path, _content, shared_from_this());
+							}
+						}
+						break;
+
 						case kFileTestReadOnly:
 							// TODO show error
 						break;
@@ -394,7 +410,7 @@ namespace
 					_state      = kStateIdle;
 					_next_state = kStateDone;
 
-					_callback->did_save(_path, _content, file::path_attributes(_path), _encoding, _saved, _error, _filter);
+					_callback->did_save(_path, _content, _encoding, _saved, _error, _filter);
 					proceed();
 				}
 				break;
@@ -419,6 +435,10 @@ namespace file
 		context->set_make_writable(false);
 	}
 
+	void save_callback_t::select_create_parent (std::string const& path, io::bytes_ptr content, save_context_ptr context)
+	{
+	}
+
 	void save_callback_t::obtain_authorization (std::string const& path, io::bytes_ptr content, osx::authorization_t auth, save_context_ptr context)
 	{
 		if(auth.obtain_right(kAuthRightName))
@@ -441,8 +461,8 @@ namespace file
 
 	void save (std::string const& path, save_callback_ptr cb, osx::authorization_t auth, io::bytes_ptr content, std::map<std::string, std::string> const& attributes, std::string const& fileType, encoding::type const& encoding, std::vector<oak::uuid_t> const& binaryImportFilters, std::vector<oak::uuid_t> const& textImportFilters)
 	{
-		save_context_ptr context(new file_context_t(cb, path, auth, content, attributes, fileType, encoding, binaryImportFilters, textImportFilters));
-		std::static_pointer_cast<file_context_t>(context)->proceed();
+		auto context = std::make_shared<file_context_t>(cb, path, auth, content, attributes, fileType, encoding, binaryImportFilters, textImportFilters);
+		context->proceed();
 	}
 
 } /* file */

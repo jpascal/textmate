@@ -2,14 +2,17 @@
 #include <cf/cf.h>
 
 static theme_t::color_info_t read_color (std::string const& str_color);
-static cf::color_t soften (cf::color_t color, CGFloat factor = 0.5);
 static CGFloat read_font_size (std::string const& str_font_size);
 
-static void get_key_path (plist::dictionary_t const& plist, std::string const& setting, theme_t::color_info_t& color)
+static bool get_key_path (plist::dictionary_t const& plist, std::string const& setting, theme_t::color_info_t& color)
 {
 	std::string temp_str;
-	plist::get_key_path(plist, setting, temp_str);
-	color = read_color(temp_str);
+	if(plist::get_key_path(plist, setting, temp_str))
+	{
+		color = read_color(temp_str);
+		return true;
+	}
+	return false;
 }
 
 static void get_key_path (plist::dictionary_t const& plist, std::string const& setting, CGFloat& font_size)
@@ -19,14 +22,28 @@ static void get_key_path (plist::dictionary_t const& plist, std::string const& s
 	font_size = read_font_size(temp_str);
 }
 
-static void get_key_path (plist::dictionary_t const& plist, std::string const& setting, cf::color_t& color)
+static CGColorPtr OakColorCreateFromThemeColor (theme_t::color_info_t const& color, CGColorSpaceRef colorspace)
 {
-	std::string temp_str;
-	if(plist::get_key_path(plist, setting, temp_str))
-		color = read_color(temp_str);
+	return color.is_blank() ? CGColorPtr() : CGColorPtr(CGColorCreate(colorspace, (CGFloat[4]){ color.red, color.green, color.blue, color.alpha }), CGColorRelease);
 }
 
-theme_t::decomposed_style_t theme_t::parse_styles (plist::dictionary_t const& plist)
+static bool color_is_dark (CGColorRef const color)
+{
+	size_t componentsCount = CGColorGetNumberOfComponents(color);
+	if(componentsCount == 4)
+	{
+		CGFloat const* components = CGColorGetComponents(color);
+
+		CGFloat const& red   = components[0];
+		CGFloat const& green = components[1];
+		CGFloat const& blue  = components[2];
+
+		return 0.30*red + 0.59*green + 0.11*blue < 0.5;
+	}
+	return false;
+}
+
+theme_t::decomposed_style_t theme_t::shared_styles_t::parse_styles (plist::dictionary_t const& plist)
 {
 	decomposed_style_t res;
 
@@ -64,7 +81,7 @@ theme_t::decomposed_style_t theme_t::parse_styles (plist::dictionary_t const& pl
 	return res;
 }
 
-std::vector<theme_t::decomposed_style_t> theme_t::global_styles (scope::context_t const& scope)
+std::vector<theme_t::decomposed_style_t> theme_t::global_styles (scope::scope_t const& scope)
 {
 	static struct { std::string name; theme_t::color_info_t decomposed_style_t::*field; } const colorKeys[] =
 	{
@@ -91,7 +108,7 @@ std::vector<theme_t::decomposed_style_t> theme_t::global_styles (scope::context_
 		plist::any_t const& value = bundles::value_for_setting(colorKeys[i].name, scope, &item);
 		if(item)
 		{
-			res.push_back(decomposed_style_t(item->scope_selector()));
+			res.emplace_back(item->scope_selector());
 			res.back().*(colorKeys[i].field) = read_color(plist::get<std::string>(value));
 		}
 	}
@@ -102,7 +119,7 @@ std::vector<theme_t::decomposed_style_t> theme_t::global_styles (scope::context_
 		plist::any_t const& value = bundles::value_for_setting(booleanKeys[i].name, scope, &item);
 		if(item)
 		{
-			res.push_back(decomposed_style_t(item->scope_selector()));
+			res.emplace_back(item->scope_selector());
 			res.back().*(booleanKeys[i].field) = plist::is_true(value) ? bool_true : bool_false;
 		}
 	}
@@ -111,7 +128,7 @@ std::vector<theme_t::decomposed_style_t> theme_t::global_styles (scope::context_
 	plist::any_t const& fontNameValue = bundles::value_for_setting("fontName", scope, &fontNameItem);
 	if(fontNameItem)
 	{
-		res.push_back(decomposed_style_t(fontNameItem->scope_selector()));
+		res.emplace_back(fontNameItem->scope_selector());
 		res.back().font_name = plist::get<std::string>(fontNameValue);
 	}
 
@@ -119,33 +136,59 @@ std::vector<theme_t::decomposed_style_t> theme_t::global_styles (scope::context_
 	plist::any_t const& fontSizeValue = bundles::value_for_setting("fontSize", scope, &fontSizeItem);
 	if(fontSizeItem)
 	{
-		res.push_back(decomposed_style_t(fontSizeItem->scope_selector()));
+		res.emplace_back(fontSizeItem->scope_selector());
 		res.back().font_size = read_font_size(plist::get<std::string>(fontSizeValue));
 	}
 
 	return res;
 }
 
+gutter_styles_t::~gutter_styles_t ()
+{
+	CGColorRef colors[] = { divider, selectionBorder, foreground, background, icons, iconsHover, iconsPressed, selectionForeground, selectionBackground, selectionIcons, selectionIconsHover, selectionIconsPressed };
+	for(auto color : colors)
+	{
+		if(color)
+			CGColorRelease(color);
+	}
+}
+
+bool gutter_styles_t::is_transparent () const
+{
+	return background && CGColorGetAlpha(background) < 1;
+}
+
 // ===========
 // = theme_t =
 // ===========
 
-theme_t::theme_t (bundles::item_ptr const& themeItem) : _item(themeItem), _callback(*this)
+theme_ptr theme_t::copy_with_font_name_and_size (std::string const& fontName, CGFloat fontSize)
 {
-	setup_styles();
-	bundles::add_callback(&_callback);
+	if(_font_name == fontName && _font_size == fontSize)
+		return std::make_shared<theme_t::theme_t>(*this);
+	return std::make_shared<theme_t::theme_t>(this->_item, fontName, fontSize);
 }
 
-theme_t::~theme_t ()
+theme_t::theme_t (bundles::item_ptr const& themeItem, std::string const& fontName, CGFloat fontSize) :_item(themeItem), _font_name(fontName), _font_size(fontSize)
 {
-	bundles::remove_callback(&_callback);
+	_styles = find_shared_styles(themeItem);
 }
 
-static cf::color_t soften (cf::color_t color, CGFloat factor)
+static CGColorRef OakColorCreateCopySoften (CGColorPtr cgColor, CGFloat factor)
 {
-	CGFloat r = color.red(), g = color.green(), b = color.blue(), a = color.alpha();
-	
-	if(color_is_dark(color))
+	CGFloat r = 0, g = 0, b = 0, a = 1;
+
+	size_t componentsCount = CGColorGetNumberOfComponents(cgColor.get());
+	if(componentsCount != 4)
+		return CGColorRetain(cgColor.get());
+
+	CGFloat const* components = CGColorGetComponents(cgColor.get());
+	r = components[0];
+	g = components[1];
+	b = components[2];
+	a = components[3];
+
+	if(color_is_dark(cgColor.get()))
 	{
 		r = 1 - factor*(1 - r);
 		g = 1 - factor*(1 - g);
@@ -157,19 +200,45 @@ static cf::color_t soften (cf::color_t color, CGFloat factor)
 		g *= factor;
 		b *= factor;
 	}
-	
-	return cf::color_t(r, g, b, a);
+
+	return CGColorCreate(CGColorGetColorSpace(cgColor.get()), (CGFloat[4]){ r, g, b, a });
 }
 
-void theme_t::setup_styles ()
+theme_t::shared_styles_t::shared_styles_t (bundles::item_ptr const& themeItem): _item(themeItem), _callback(*this)
+{
+	setup_styles();
+	bundles::add_callback(&_callback);
+}
+
+theme_t::shared_styles_t::~shared_styles_t ()
+{
+	bundles::remove_callback(&_callback);
+	if(_color_space)
+		CGColorSpaceRelease(_color_space);
+}
+
+void theme_t::shared_styles_t::setup_styles ()
 {
 	_styles.clear();
-	_cache.clear();
+
+	if(_color_space)
+	{
+		CGColorSpaceRelease(_color_space);
+		_color_space = NULL;
+	}
 
 	if(_item)
 	{
 		if(bundles::item_ptr newItem = bundles::lookup(_item->uuid()))
 			_item = newItem;
+
+		std::string colorSpaceName;
+		if(plist::get_key_path(_item->plist(), "colorSpaceName", colorSpaceName) && colorSpaceName == "sRGB")
+		{
+			if(_color_space)
+				CGColorSpaceRelease(_color_space);
+			_color_space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+		}
 
 		plist::array_t items;
 		if(plist::get_key_path(_item->plist(), "settings", items))
@@ -181,39 +250,43 @@ void theme_t::setup_styles ()
 					_styles.push_back(parse_styles(*styles));
 					if(!_styles.back().invisibles.is_blank())
 					{
-						decomposed_style_t invisbleStyle("deco.invisible");
-						invisbleStyle.foreground = _styles.back().invisibles;
-						_styles.push_back(invisbleStyle);
+						decomposed_style_t invisibleStyle("deco.invisible");
+						invisibleStyle.foreground = _styles.back().invisibles;
+						_styles.push_back(invisibleStyle);
 					}
 				}
 			}
 		}
 	}
 
+	if(!_color_space)
+		_color_space = CGColorSpaceCreateWithName(kCGColorSpaceGenericRGB);
+
 	// =======================================
 	// = Find “global” foreground/background =
 	// =======================================
 
 	// We assume that the first style is the unscoped root style
-	_foreground     = _styles.empty() ? cf::color_t("#FFFFFF") : _styles[0].foreground;
-	_background     = _styles.empty() ? cf::color_t("#000000") : _styles[0].background;
-	_is_dark        = color_is_dark(_background);
-	_is_transparent = _background.alpha() < 1;
+
+	_foreground     = (_styles.empty() ? CGColorPtr() : OakColorCreateFromThemeColor(_styles[0].foreground, _color_space)) ?: CGColorPtr(CGColorCreate(_color_space, (CGFloat[4]){ 1, 1, 1, 1 }), CGColorRelease);
+	_background     = (_styles.empty() ? CGColorPtr() : OakColorCreateFromThemeColor(_styles[0].background, _color_space)) ?: CGColorPtr(CGColorCreate(_color_space, (CGFloat[4]){ 0, 0, 0, 1 }), CGColorRelease);
+	_is_dark        = color_is_dark(_background.get());
+	_is_transparent = CGColorGetAlpha(_background.get()) < 1;
 
 	// =========================
 	// = Default Gutter Styles =
 	// =========================
 
-	_gutter_styles.divider             = soften(_foreground, 0.4);
-	_gutter_styles.foreground          = soften(_foreground, 0.5);
-	_gutter_styles.background          = soften(_background, 0.87);
-	_gutter_styles.selectionForeground = soften(_foreground, 0.95);
-	_gutter_styles.selectionBackground = soften(_background, 0.95);
+	_gutter_styles.divider             = OakColorCreateCopySoften(_foreground, 0.4);
+	_gutter_styles.foreground          = OakColorCreateCopySoften(_foreground, 0.5);
+	_gutter_styles.background          = OakColorCreateCopySoften(_background, 0.87);
+	_gutter_styles.selectionForeground = OakColorCreateCopySoften(_foreground, 0.95);
+	_gutter_styles.selectionBackground = OakColorCreateCopySoften(_background, 0.95);
 
 	plist::dictionary_t gutterSettings;
 	if(_item && plist::get_key_path(_item->plist(), "gutterSettings", gutterSettings))
 	{
-		static struct { std::string const key; cf::color_t gutter_styles_t::*field; } const gutterKeys[] =
+		static struct { std::string const key; CGColorRef gutter_styles_t::*field; } const gutterKeys[] =
 		{
 			{ "divider",               &gutter_styles_t::divider               },
 			{ "selectionBorder",       &gutter_styles_t::selectionBorder       },
@@ -230,16 +303,24 @@ void theme_t::setup_styles ()
 		};
 
 		iterate(gutterKey, gutterKeys)
-			get_key_path(gutterSettings, gutterKey->key, _gutter_styles.*(gutterKey->field));
+		{
+			theme_t::color_info_t color;
+			if(get_key_path(gutterSettings, gutterKey->key, color))
+			{
+				if(_gutter_styles.*(gutterKey->field))
+					CGColorRelease(_gutter_styles.*(gutterKey->field));
+				_gutter_styles.*(gutterKey->field) = CGColorRetain(OakColorCreateFromThemeColor(color, _color_space).get());
+			}
+		}
 	}
 
-	_gutter_styles.selectionBorder       = _gutter_styles.selectionBorder       ? _gutter_styles.selectionBorder       : _gutter_styles.divider;
-	_gutter_styles.icons                 = _gutter_styles.icons                 ? _gutter_styles.icons                 : _gutter_styles.foreground;
-	_gutter_styles.iconsHover            = _gutter_styles.iconsHover            ? _gutter_styles.iconsHover            : _gutter_styles.icons;
-	_gutter_styles.iconsPressed          = _gutter_styles.iconsPressed          ? _gutter_styles.iconsPressed          : _gutter_styles.icons;
-	_gutter_styles.selectionIcons        = _gutter_styles.selectionIcons        ? _gutter_styles.selectionIcons        : _gutter_styles.selectionForeground;
-	_gutter_styles.selectionIconsHover   = _gutter_styles.selectionIconsHover   ? _gutter_styles.selectionIconsHover   : _gutter_styles.selectionIcons;
-	_gutter_styles.selectionIconsPressed = _gutter_styles.selectionIconsPressed ? _gutter_styles.selectionIconsPressed : _gutter_styles.selectionIcons;
+	_gutter_styles.selectionBorder       = _gutter_styles.selectionBorder       ?: CGColorRetain(_gutter_styles.divider);
+	_gutter_styles.icons                 = _gutter_styles.icons                 ?: CGColorRetain(_gutter_styles.foreground);
+	_gutter_styles.iconsHover            = _gutter_styles.iconsHover            ?: CGColorRetain(_gutter_styles.icons);
+	_gutter_styles.iconsPressed          = _gutter_styles.iconsPressed          ?: CGColorRetain(_gutter_styles.icons);
+	_gutter_styles.selectionIcons        = _gutter_styles.selectionIcons        ?: CGColorRetain(_gutter_styles.selectionForeground);
+	_gutter_styles.selectionIconsHover   = _gutter_styles.selectionIconsHover   ?: CGColorRetain(_gutter_styles.selectionIcons);
+	_gutter_styles.selectionIconsPressed = _gutter_styles.selectionIconsPressed ?: CGColorRetain(_gutter_styles.selectionIcons);
 }
 
 oak::uuid_t const& theme_t::uuid () const
@@ -248,38 +329,48 @@ oak::uuid_t const& theme_t::uuid () const
 	return _item ? _item->uuid() : FallbackThemeUUID;
 }
 
+std::string const& theme_t::font_name () const
+{
+	return _font_name;
+}
+
+CGFloat theme_t::font_size () const
+{
+	return _font_size;
+}
+
 CGColorRef theme_t::foreground () const
 {
-	return _foreground;
+	return _styles->_foreground.get();
 }
 
 CGColorRef theme_t::background (std::string const& fileType) const
 {
 	if(fileType != NULL_STR)
-		return styles_for_scope(fileType, NULL_STR, 0).background();
-	return _background;
+		return styles_for_scope(fileType).background();
+	return _styles->_background.get();
 }
 
 bool theme_t::is_dark () const
 {
-	return _is_dark;
+	return _styles->_is_dark;
 }
 
 bool theme_t::is_transparent () const
 {
-	return _is_transparent;
+	return _styles->_is_transparent;
 }
 
 gutter_styles_t const& theme_t::gutter_styles () const
 {
-	return _gutter_styles;
+	return _styles->_gutter_styles;
 }
 
-styles_t const& theme_t::styles_for_scope (scope::context_t const& scope, std::string fontName, CGFloat fontSize) const
+styles_t const& theme_t::styles_for_scope (scope::scope_t const& scope) const
 {
-	ASSERT(scope.left && scope.right);
+	ASSERT(scope);
 
-	std::map<key_t, styles_t>::iterator styles = _cache.find(key_t(scope, fontName, fontSize));
+	std::map<scope::scope_t, styles_t>::iterator styles = _cache.find(scope);
 	if(styles == _cache.end())
 	{
 		std::multimap<double, decomposed_style_t> ordering;
@@ -287,34 +378,34 @@ styles_t const& theme_t::styles_for_scope (scope::context_t const& scope, std::s
 		{
 			double rank = 0;
 			if(it->scope_selector.does_match(scope, &rank))
-				ordering.insert(std::make_pair(rank, *it));
+				ordering.emplace(rank, *it);
 		}
 
-		iterate(it, _styles)
+		iterate(it, _styles->_styles)
 		{
 			double rank = 0;
 			if(it->scope_selector.does_match(scope, &rank))
-				ordering.insert(std::make_pair(rank, *it));
+				ordering.emplace(rank, *it);
 		}
 
-		decomposed_style_t base(scope::selector_t(), fontName, fontSize);
+		decomposed_style_t base(scope::selector_t(), _font_name, _font_size);
 		iterate(it, ordering)
 			base += it->second;
 
-		CTFontPtr font(CTFontCreateWithName(cf::wrap(base.font_name), round(base.font_size), NULL), CFRelease);
+		CTFontPtr font(CTFontCreateWithName(cf::wrap(base.font_name), base.font_size, NULL), CFRelease);
 		if(CTFontSymbolicTraits traits = (base.bold == bool_true ? kCTFontBoldTrait : 0) + (base.italic == bool_true ? kCTFontItalicTrait : 0))
 		{
-			if(CTFontRef newFont = CTFontCreateCopyWithSymbolicTraits(font.get(), round(base.font_size), NULL, traits, kCTFontBoldTrait | kCTFontItalicTrait))
+			if(CTFontRef newFont = CTFontCreateCopyWithSymbolicTraits(font.get(), base.font_size, NULL, traits, kCTFontBoldTrait | kCTFontItalicTrait))
 				font.reset(newFont, CFRelease);
 		}
 
-		cf::color_t foreground = base.foreground.is_blank()                  ? cf::color_t("#000000")   : base.foreground;
-		cf::color_t background = base.background.is_blank()                  ? cf::color_t("#FFFFFF")   : base.background;
-		cf::color_t caret      = base.caret.is_blank()                       ? cf::color_t("#000000")   : base.caret;
-		cf::color_t selection  = base.selection.is_blank()                   ? cf::color_t("#4D97FF54") : base.selection;
+		CGColorPtr foreground = OakColorCreateFromThemeColor(base.foreground, _styles->_color_space) ?: CGColorPtr(CGColorCreate(_styles->_color_space, (CGFloat[4]){   0,   0,   0,   1 }), CGColorRelease);
+		CGColorPtr background = OakColorCreateFromThemeColor(base.background, _styles->_color_space) ?: CGColorPtr(CGColorCreate(_styles->_color_space, (CGFloat[4]){   1,   1,   1,   1 }), CGColorRelease);
+		CGColorPtr caret      = OakColorCreateFromThemeColor(base.caret,      _styles->_color_space) ?: CGColorPtr(CGColorCreate(_styles->_color_space, (CGFloat[4]){   0,   0,   0,   1 }), CGColorRelease);
+		CGColorPtr selection  = OakColorCreateFromThemeColor(base.selection,  _styles->_color_space) ?: CGColorPtr(CGColorCreate(_styles->_color_space, (CGFloat[4]){ 0.5, 0.5, 0.5,   1 }), CGColorRelease);
 
 		styles_t res(foreground, background, caret, selection, font, base.underlined == bool_true, base.misspelled == bool_true);
-		styles = _cache.insert(std::make_pair(key_t(scope, fontName, fontSize), res)).first;
+		styles = _cache.emplace(scope, res).first;
 	}
 	return styles->second;
 }
@@ -324,11 +415,14 @@ static theme_t::color_info_t read_color (std::string const& str_color )
 	enum { R, G, B, A };
 	unsigned int col[4] = { 0x00, 0x00, 0x00, 0xFF } ;
 	
-	int res = sscanf(str_color.c_str(), "#%02x%02x%02x%02x", &col[R], &col[G], &col[B], &col[A]);
-	if(res < 3) // R G B was not parsed, or color is 100% transparent
-		return theme_t::color_info_t::color_info_t(); // color is not set
+	if(3 <= sscanf(str_color.c_str(), "#%02x%02x%02x%02x", &col[R], &col[G], &col[B], &col[A]))
+		return theme_t::color_info_t::color_info_t(col[R]/255.0, col[G]/255.0, col[B]/255.0, col[A]/255.0);
 
-	return theme_t::color_info_t::color_info_t(col[R]/255.0, col[G]/255.0, col[B]/255.0, col[A]/255.0);
+	col[A] = 0xF;
+	if(3 <= sscanf(str_color.c_str(), "#%1x%1x%1x%1x", &col[R], &col[G], &col[B], &col[A]))
+		return theme_t::color_info_t::color_info_t(col[R]/15.0, col[G]/15.0, col[B]/15.0, col[A]/15.0);
+
+	return theme_t::color_info_t::color_info_t(); // color is not set
 }
 
 static theme_t::color_info_t blend (theme_t::color_info_t const& lhs, theme_t::color_info_t const& rhs)
@@ -399,6 +493,18 @@ theme_t::decomposed_style_t& theme_t::decomposed_style_t::operator+= (theme_t::d
 	return *this;
 }
 
+theme_t::shared_styles_ptr theme_t::find_shared_styles (bundles::item_ptr const& themeItem)
+{
+	static oak::uuid_t const kEmptyThemeUUID = oak::uuid_t().generate();
+	static std::map<oak::uuid_t, theme_t::shared_styles_ptr> Cache;
+
+	oak::uuid_t const& uuid = themeItem ? themeItem->uuid() : kEmptyThemeUUID;
+	auto theme = Cache.find(uuid);
+	if(theme == Cache.end())
+		theme = Cache.emplace(uuid, std::make_shared<shared_styles_t>(themeItem)).first;
+	return theme->second;
+}
+
 // ==============
 // = Public API =
 // ==============
@@ -409,8 +515,8 @@ theme_ptr parse_theme (bundles::item_ptr const& themeItem)
 	static std::map<oak::uuid_t, theme_ptr> Cache;
 
 	oak::uuid_t const& uuid = themeItem ? themeItem->uuid() : kEmptyThemeUUID;
-	std::map<oak::uuid_t, theme_ptr>::iterator theme = Cache.find(uuid);
+	auto theme = Cache.find(uuid);
 	if(theme == Cache.end())
-		theme = Cache.insert(std::make_pair(uuid, theme_ptr(new theme_t(themeItem)))).first;
+		theme = Cache.emplace(uuid, std::make_shared<theme_t>(themeItem)).first;
 	return theme->second;
 }

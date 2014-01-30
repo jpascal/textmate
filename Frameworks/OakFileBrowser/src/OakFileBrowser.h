@@ -1,44 +1,41 @@
 #import <oak/debug.h>
 
 @class OakFileBrowser;
-@class OakFileBrowserView;
-@class OakHistoryController;
-@class FSOutlineViewDelegate;
 
 @protocol OakFileBrowserDelegate
 - (void)fileBrowser:(OakFileBrowser*)aFileBrowser openURLs:(NSArray*)someURLs;
 - (void)fileBrowser:(OakFileBrowser*)aFileBrowser closeURL:(NSURL*)anURL;
 @end
 
-@protocol OFBOutlineViewMenuDelegate // private/internal -- from ui/OFBOutlineView.h
-- (NSMenu*)menuForOutlineView:(NSOutlineView*)anOutlineView;
-@end
+PUBLIC @interface OakFileBrowser : NSResponder
+@property (nonatomic, weak) id <OakFileBrowserDelegate> delegate;
 
-PUBLIC @interface OakFileBrowser : NSResponder <OFBOutlineViewMenuDelegate>
-{
-	OBJC_WATCH_LEAKS(OakFileBrowser);
+@property (nonatomic)           NSURL*        url;
+@property (nonatomic, readonly) NSString*     path;
+@property (nonatomic, readonly) NSString*     directoryForNewItems;
 
-	NSURL* url; // Currently viewed root url
-	NSUInteger dataSourceOptions;
-	OakHistoryController* historyController;
-
-	id <OakFileBrowserDelegate> delegate;
-	OakFileBrowserView* view;
-	FSOutlineViewDelegate* outlineViewDelegate;
-}
-@property (nonatomic, assign) id <OakFileBrowserDelegate> delegate;
-@property (nonatomic, retain, readonly) NSView* view;
-
-@property (nonatomic, readonly) NSString*     location;
+@property (nonatomic)           NSArray*      openURLs;
+@property (nonatomic)           NSArray*      modifiedURLs;
 @property (nonatomic, readonly) NSArray*      selectedURLs;
-@property (nonatomic, retain)   NSArray*      openURLs;
-@property (nonatomic, retain)   NSArray*      modifiedURLs;
-@property (nonatomic, readonly) NSDictionary* sessionState;
+
+@property (nonatomic, readonly) NSView*       view;
+@property (nonatomic)           NSDictionary* sessionState;
 
 - (void)setupViewWithState:(NSDictionary*)fileBrowserState;
-- (void)showURL:(NSURL*)aPath;
-- (void)deselectAll:(id)sender;
-- (void)updateVariables:(std::map<std::string, std::string>&)env;
+- (std::map<std::string, std::string>)variables;
+
+- (void)goToURL:(NSURL*)aURL;
+- (void)selectURL:(NSURL*)aURL withParentURL:(NSURL*)parentURL;
+- (void)editURL:(NSURL*)aURL;
+
+- (NSRect)iconFrameForURL:(NSURL*)aURL;
+
+- (IBAction)reload:(id)sender;
+- (IBAction)deselectAll:(id)sender;
+- (IBAction)toggleShowInvisibles:(id)sender;
+
+- (BOOL)canGoBack;
+- (BOOL)canGoForward;
 
 - (IBAction)goBack:(id)sender;
 - (IBAction)goForward:(id)sender;
@@ -50,4 +47,8 @@ PUBLIC @interface OakFileBrowser : NSResponder <OFBOutlineViewMenuDelegate>
 - (IBAction)goToFavorites:(id)sender;
 - (IBAction)goToSCMDataSource:(id)sender;
 - (IBAction)orderFrontGoToFolder:(id)sender;
+@end
+
+@interface OakFileBrowser (ForQuickLookKeyEventForwardingAndMoveFocus)
+@property (nonatomic, readonly) NSOutlineView* outlineView;
 @end

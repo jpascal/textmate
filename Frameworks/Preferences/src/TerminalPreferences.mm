@@ -1,5 +1,6 @@
 #import "TerminalPreferences.h"
 #import "Keys.h"
+#import <OakAppKit/OakAppKit.h>
 #import <OakAppKit/NSAlert Additions.h>
 #import <OakAppKit/NSImage Additions.h>
 #import <OakAppKit/NSMenu Additions.h>
@@ -10,6 +11,7 @@
 #import <ns/ns.h>
 #import <regexp/format_string.h>
 #import <bundles/bundles.h>
+#import <oak/compat.h>
 
 static void CreateHyperLink (NSTextField* textField, NSString* text, NSString* url)
 {
@@ -46,7 +48,7 @@ static bool run_auth_command (AuthorizationRef& auth, std::string const& cmd, ..
 	args.push_back(NULL);
 
 	bool res = false;
-	if(AuthorizationExecuteWithPrivileges(auth, cmd.c_str(), kAuthorizationFlagDefaults, &args[0], NULL) == errAuthorizationSuccess)
+	if(oak::execute_with_privileges(auth, cmd, kAuthorizationFlagDefaults, &args[0], NULL) == errAuthorizationSuccess)
 	{
 		int status;
 		int pid = wait(&status);
@@ -153,12 +155,12 @@ static bool uninstall_mate (std::string const& path)
 	{
 		[OakStringListTransformer createTransformerWithName:@"OakRMateInterfaceTransformer" andObjectsArray:@[ kRMateServerListenLocalhost, kRMateServerListenRemote ]];
 
-		self.defaultsProperties = [NSDictionary dictionaryWithObjectsAndKeys:
-			kUserDefaultsMateInstallPathKey,    @"path",
-			kUserDefaultsDisableRMateServerKey, @"disableRMate",
-			kUserDefaultsRMateServerListenKey,  @"interface",
-			kUserDefaultsRMateServerPortKey,    @"port",
-		nil];
+		self.defaultsProperties = @{
+			@"path"         : kUserDefaultsMateInstallPathKey,
+			@"disableRMate" : kUserDefaultsDisableRMateServerKey,
+			@"interface"    : kUserDefaultsRMateServerListenKey,
+			@"port"         : kUserDefaultsRMateServerPortKey,
+		};
 	}
 	return self;
 }
@@ -229,7 +231,7 @@ static bool uninstall_mate (std::string const& path)
 	[self updatePopUp:self.mateInstallPath];
 	[self updateUI:self];
 
-	CreateHyperLink(rmateSummaryText, @"rmate", [NSString stringWithFormat:@"txmt://open?url=%@", [[NSURL fileURLWithPath:[[NSBundle bundleForClass:[self class]] pathForResource:@"rmate" ofType:@""]] absoluteString]]);
+	CreateHyperLink(rmateSummaryText, @"rmate", @"https://github.com/textmate/rmate/");
 	LSSetDefaultHandlerForURLScheme(CFSTR("txmt"), CFBundleGetIdentifier(CFBundleGetMainBundle()));
 }
 
@@ -254,8 +256,8 @@ static bool uninstall_mate (std::string const& path)
 		{
 			[self setMateInstallPath:dstPath];
 			std::string res = io::exec(to_s(srcPath), "--version", NULL);
-			if(regexp::match_t const& m = regexp::search("\\Amate ([\\d.]+)", res.data(), res.data() + res.size()))
-				[[NSUserDefaults standardUserDefaults] setObject:[NSString stringWithUTF8String:res.data() + m.begin(1) length:m.end(1) - m.begin(1)] forKey:kUserDefaultsMateInstallVersionKey];
+			if(regexp::match_t const& m = regexp::search("\\Amate ([\\d.]+)", res))
+				[[NSUserDefaults standardUserDefaults] setDouble:std::stod(m[1]) forKey:kUserDefaultsMateInstallVersionKey];
 		}
 	}
 	else
@@ -263,12 +265,6 @@ static bool uninstall_mate (std::string const& path)
 		NSRunAlertPanel(@"Unable to find ‘mate’", @"The ‘mate’ binary is missing from the application bundle. We recommend that you re-download the application.", @"OK", nil, nil);
 	}
 	[self updateUI:self];
-}
-
-- (void)replaceWarningDidEnd:(NSAlert*)alert returnCode:(NSInteger)returnCode contextInfo:(void*)stack
-{
-	if(returnCode == NSAlertFirstButtonReturn)
-		[self installMateAs:[[installPathPopUp titleOfSelectedItem] stringByExpandingTildeInPath]];
 }
 
 - (IBAction)performInstallMate:(id)sender
@@ -294,7 +290,10 @@ static bool uninstall_mate (std::string const& path)
 		[alert setMessageText:@"File Already Exists"];
 		[alert setInformativeText:[NSString stringWithCxxString:summary]];
 		[alert addButtons:@"Replace", @"Cancel", nil];
-		[alert beginSheetModalForWindow:[self.view window] modalDelegate:self didEndSelector:@selector(replaceWarningDidEnd:returnCode:contextInfo:) contextInfo:NULL];
+		OakShowAlertForWindow(alert, [self.view window], ^(NSInteger returnCode){
+			if(returnCode == NSAlertFirstButtonReturn)
+				[self installMateAs:[[installPathPopUp titleOfSelectedItem] stringByExpandingTildeInPath]];
+		});
 	}
 	else
 	{
@@ -318,16 +317,18 @@ static bool uninstall_mate (std::string const& path)
 
 	if(oldMate && newMate)
 	{
-		std::string res = io::exec(to_s(newMate), "--version", NULL);
-		if(regexp::match_t const& m = regexp::search("\\Amate ([\\d.]+)", res.data(), res.data() + res.size()))
-		{
-			NSString* newVersion = [NSString stringWithUTF8String:res.data() + m.begin(1) length:m.end(1) - m.begin(1)];
-			if(oldVersion < [newVersion doubleValue])
+		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+			std::string res = io::exec(to_s(newMate), "--version", NULL);
+			if(regexp::match_t const& m = regexp::search("\\Amate ([\\d.]+)", res))
 			{
-				if(install_mate(to_s(newMate), to_s(oldMate)))
-					[[NSUserDefaults standardUserDefaults] setObject:newVersion forKey:kUserDefaultsMateInstallVersionKey];
+				double newVersion = std::stod(m[1]);
+				if(oldVersion < newVersion)
+				{
+					if(install_mate(to_s(newMate), to_s(oldMate)))
+						[[NSUserDefaults standardUserDefaults] setDouble:newVersion forKey:kUserDefaultsMateInstallVersionKey];
+				}
 			}
-		}
+		});
 	}
 }
 @end

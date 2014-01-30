@@ -11,15 +11,10 @@
 @end
 
 @implementation BundlePopupMenuTarget
-- (BOOL)validateMenuItem:(NSMenuItem*)menuItem
-{
-	return [menuItem action] == @selector(takeItemUUIDFrom:);
-}
-
-- (void)takeItemUUIDFrom:(id)sender
+- (void)performBundleItemWithUUIDStringFrom:(NSMenuItem*)sender
 {
 	ASSERT([sender isKindOfClass:[NSMenuItem class]]);
-	self.selectedItemUUID = [(NSMenuItem*)sender representedObject];
+	self.selectedItemUUID = [sender representedObject];
 }
 @end
 
@@ -48,7 +43,7 @@ static std::vector<bundles::item_ptr> filtered_menu (bundles::item_ptr menuItem,
 	return res;
 }
 
-void OakAddBundlesToMenu (std::vector<bundles::item_ptr> const& items, bool hasSelection, bool setKeys, NSMenu* menu, SEL menuAction, id menuTarget)
+void OakAddBundlesToMenu (std::vector<bundles::item_ptr> const& items, bool setKeys, NSMenu* menu, SEL menuAction)
 {
 	bool onlyGrammars = true;
 	iterate(item, items)
@@ -58,17 +53,16 @@ void OakAddBundlesToMenu (std::vector<bundles::item_ptr> const& items, bool hasS
 	{
 		std::multimap<std::string, bundles::item_ptr, text::less_t> ordering;
 		iterate(item, items)
-			ordering.insert(std::make_pair((*item)->name(), *item));
+			ordering.emplace((*item)->name(), *item);
 
 		iterate(pair, ordering)
 		{
 			NSMenuItem* menuItem = [menu addItemWithTitle:[NSString stringWithCxxString:pair->first] action:menuAction keyEquivalent:@""];
-			[menuItem setTarget:menuTarget];
 			[menuItem setRepresentedObject:[NSString stringWithCxxString:pair->second->uuid()]];
 
 			if(setKeys)
 			{
-				[menuItem setKeyEquivalentCxxString:key_equivalent(pair->second)];
+				[menuItem setInactiveKeyEquivalentCxxString:key_equivalent(pair->second)];
 				[menuItem setTabTriggerCxxString:pair->second->value_for_field(bundles::kFieldTabTrigger)];
 			}
 		}
@@ -77,7 +71,7 @@ void OakAddBundlesToMenu (std::vector<bundles::item_ptr> const& items, bool hasS
 	{
 		std::multimap<bundles::item_ptr, bundles::item_ptr> byBundle;
 		iterate(item, items)
-			byBundle.insert(std::make_pair((*item)->bundle(), *item));
+			byBundle.emplace((*item)->bundle(), *item);
 
 		std::multimap<std::string, std::vector<bundles::item_ptr>, text::less_t> menus;
 		while(!byBundle.empty())
@@ -92,10 +86,10 @@ void OakAddBundlesToMenu (std::vector<bundles::item_ptr> const& items, bool hasS
 
 			std::multimap<std::string, bundles::item_ptr, text::less_t> ordering;
 			iterate(item, includedItems)
-				ordering.insert(std::make_pair(name_with_selection(*item, hasSelection), *item));
+				ordering.emplace((*item)->name(), *item);
 			std::transform(ordering.begin(), ordering.end(), back_inserter(menuItems), [](std::pair<std::string, bundles::item_ptr> const& p){ return p.second; });
 
-			menus.insert(std::make_pair(bundle->name(), menuItems));
+			menus.emplace(bundle->name(), menuItems);
 		}
 
 		bool showBundleHeadings = menus.size() > 1;
@@ -119,13 +113,12 @@ void OakAddBundlesToMenu (std::vector<bundles::item_ptr> const& items, bool hasS
 						[menu addItem:[NSMenuItem separatorItem]];
 					pendingSeparator = false;
 
-					NSMenuItem* menuItem = [menu addItemWithTitle:[NSString stringWithCxxString:name_with_selection(*item, hasSelection)] action:menuAction keyEquivalent:@""];
-					[menuItem setTarget:menuTarget];
+					NSMenuItem* menuItem = [menu addItemWithTitle:[NSString stringWithCxxString:(*item)->name()] action:menuAction keyEquivalent:@""];
 					[menuItem setRepresentedObject:[NSString stringWithCxxString:(*item)->uuid()]];
 
 					if(setKeys)
 					{
-						[menuItem setKeyEquivalentCxxString:key_equivalent(*item)];
+						[menuItem setInactiveKeyEquivalentCxxString:key_equivalent(*item)];
 						[menuItem setTabTriggerCxxString:(*item)->value_for_field(bundles::kFieldTabTrigger)];
 					}
 
@@ -139,27 +132,27 @@ void OakAddBundlesToMenu (std::vector<bundles::item_ptr> const& items, bool hasS
 	}
 }
 
-bundles::item_ptr OakShowMenuForBundleItems (std::vector<bundles::item_ptr> const& items, CGPoint const& pos, bool hasSelection)
+bundles::item_ptr OakShowMenuForBundleItems (std::vector<bundles::item_ptr> const& items, CGPoint const& pos)
 {
 	if(items.empty())
 		return bundles::item_ptr();
 	else if(items.size() == 1)
 		return items.front();
 
-	BundlePopupMenuTarget* menuTarget = [BundlePopupMenuTarget new];
 	NSMenu* menu = [NSMenu new];
 	[menu setFont:[NSFont menuFontOfSize:[NSFont smallSystemFontSize]]];
-	OakAddBundlesToMenu(items, hasSelection, false, menu, @selector(takeItemUUIDFrom:), menuTarget);
+	OakAddBundlesToMenu(items, false, menu, @selector(performBundleItemWithUUIDStringFrom:));
+	[menu update];
 
-	int key = 1;
+	char key = 0;
+	BundlePopupMenuTarget* menuTarget = [BundlePopupMenuTarget new];
 	for(NSMenuItem* menuItem in [menu itemArray])
 	{
-		if(menuItem.action)
+		if(menuItem.action == @selector(performBundleItemWithUUIDStringFrom:))
 		{
-			[menuItem setKeyEquivalent:[NSString stringWithFormat:@"%d", key % 10]];
+			menuItem.target = menuTarget;
+			[menuItem setKeyEquivalent:key < 10 ? [NSString stringWithFormat:@"%c", '0' + (++key % 10)] : @""];
 			[menuItem setKeyEquivalentModifierMask:0];
-			if(++key == 10)
-				break;
 		}
 	}
 

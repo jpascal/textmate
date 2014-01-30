@@ -3,6 +3,8 @@
 #include <cf/cf.h>
 #include <text/utf8.h>
 #include <text/utf16.h>
+#include <text/hexdump.h>
+#include <crash/info.h>
 
 namespace ng
 {
@@ -20,8 +22,12 @@ namespace ng
 	{
 		if(_spelling_dot)
 			CFRelease(_spelling_dot);
+
 		iterate(pair, _folding_dots_cache)
-			CFRelease(pair->second);
+		{
+			if(pair->second)
+				CFRelease(pair->second);
+		}
 	}
 
 	CGImageRef context_t::folding_dots (double width, double height) const
@@ -32,7 +38,7 @@ namespace ng
 		auto size = std::make_pair(width, height);
 		auto it = _folding_dots_cache.find(size);
 		if(it == _folding_dots_cache.end())
-			it = _folding_dots_cache.insert(std::make_pair(size, _folding_dots_create(width, height))).first;
+			it = _folding_dots_cache.emplace(size, _folding_dots_create(width, height)).first;
 		return it->second;
 	}
 
@@ -91,25 +97,40 @@ namespace ct
 	// = line_t =
 	// ==========
 
-	line_t::line_t (std::string const& text, std::map<size_t, scope::scope_t> const& scopes, theme_ptr const& theme, std::string fontName, CGFloat fontSize, CGColorRef textColor) : _text(text)
+	line_t::line_t (std::string const& text, std::map<size_t, scope::scope_t> const& scopes, theme_ptr const& theme, CGColorRef textColor) : _text(text)
 	{
+		crash_reporter_info_t info(text::format("text size: %zu, is valid utf-8: %s, %zu scope(s): %zu-%zu", text.size(), BSTR(utf8::is_valid(text.begin(), text.end())), scopes.size(), scopes.empty() ? 0 : scopes.begin()->first, scopes.empty() ? 0 : (--scopes.end())->first));
 		ASSERT(utf8::is_valid(text.begin(), text.end()));
+		ASSERT(scopes.empty() || (--scopes.end())->first <= text.size());
 
 		CFMutableAttributedStringRef toDraw = CFAttributedStringCreateMutable(kCFAllocatorDefault, 0);
 		for(auto pair = scopes.begin(); pair != scopes.end(); )
 		{
-			styles_t const& styles = theme->styles_for_scope(pair->second, fontName, fontSize);
+			styles_t const& styles = theme->styles_for_scope(pair->second);
 			size_t i = pair->first;
 			size_t j = ++pair != scopes.end() ? pair->first : text.size();
 
+			if(j < i)
+			{
+				info << text::format("bad range: %zu-%zu (at end: %s)", i, j, BSTR(pair == scopes.end()));
+				abort();
+			}
+
+			std::string const cStr = text.substr(i, j - i);
+			if(!utf8::is_valid(cStr.begin(), cStr.end()))
+			{
+				info << text::format("range %zu-%zu is not UTF-8:\n%s", i, j, text::to_hex(cStr.begin(), cStr.end()).c_str());
+				abort();
+			}
+
 			CFMutableAttributedStringRef str = CFAttributedStringCreateMutable(kCFAllocatorDefault, 0);
-			CFAttributedStringReplaceString(str, CFRangeMake(0, 0), cf::wrap(text.substr(i, j - i)));
+			CFAttributedStringReplaceString(str, CFRangeMake(0, 0), cf::wrap(cStr));
 			CFAttributedStringSetAttribute(str, CFRangeMake(0, CFAttributedStringGetLength(str)), kCTFontAttributeName, styles.font());
 			CFAttributedStringSetAttribute(str, CFRangeMake(0, CFAttributedStringGetLength(str)), kCTForegroundColorAttributeName, textColor ?: styles.foreground());
 			CFAttributedStringSetAttribute(str, CFRangeMake(0, CFAttributedStringGetLength(str)), kCTLigatureAttributeName, cf::wrap(0));
 			if(styles.underlined())
-				_underlines.push_back(std::make_pair(CFRangeMake(CFAttributedStringGetLength(toDraw), CFAttributedStringGetLength(str)), CGColorPtr((CGColorRef)CFRetain(styles.foreground()), CFRelease)));
-			_backgrounds.push_back(std::make_pair(CFRangeMake(CFAttributedStringGetLength(toDraw), CFAttributedStringGetLength(str)), CGColorPtr((CGColorRef)CFRetain(styles.background()), CFRelease)));
+				_underlines.push_back(std::make_pair(CFRangeMake(CFAttributedStringGetLength(toDraw), CFAttributedStringGetLength(str)), CGColorPtr(CGColorRetain(styles.foreground()), CGColorRelease)));
+			_backgrounds.push_back(std::make_pair(CFRangeMake(CFAttributedStringGetLength(toDraw), CFAttributedStringGetLength(str)), CGColorPtr(CGColorRetain(styles.background()), CGColorRelease)));
 			CFAttributedStringReplaceAttributedString(toDraw, CFRangeMake(CFAttributedStringGetLength(toDraw), 0), str);
 			CFRelease(str);
 		}

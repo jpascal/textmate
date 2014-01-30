@@ -2,6 +2,7 @@
 #include <bundles/bundles.h>
 #include <OakFoundation/NSString Additions.h>
 #include <BundleMenu/BundleMenu.h>
+#include <crash/info.h>
 
 /*
 
@@ -42,7 +43,7 @@ static CGPoint MenuPosition ()
 	NSPoint pos = [NSEvent mouseLocation];
 	pos.y -= 16;
 
-	return NSPointToCGPoint(pos);
+	return pos;
 }
 
 @interface OakMainMenu : NSMenu
@@ -52,9 +53,25 @@ static CGPoint MenuPosition ()
 @end
 
 @implementation OakMainMenu
+- (BOOL)performWindowMenuAction:(SEL)anAction
+{
+	NSMenu* windowMenu = [[self itemWithTitle:@"Window"] submenu];
+	NSInteger index = [windowMenu indexOfItemWithTarget:nil andAction:anAction];
+	if(!windowMenu || index == -1)
+		return [NSApp sendAction:anAction to:nil from:self];
+
+	[windowMenu update];
+	if(![[windowMenu itemAtIndex:index] isEnabled])
+		return NO;
+
+	[windowMenu performActionForItemAtIndex:index];
+	return YES;
+}
+
 - (BOOL)performKeyEquivalent:(NSEvent*)anEvent
 {
 	std::string const keyString = to_s(anEvent);
+	crash_reporter_info_t crashInfo(text::format("Key equivalent ‘%s’.", keyString.c_str()));
 
 	auto const bundleItems = bundles::query(bundles::kFieldKeyEquivalent, keyString, "", bundles::kItemTypeCommand|bundles::kItemTypeGrammar|bundles::kItemTypeSnippet);
 	if(!bundleItems.empty())
@@ -64,41 +81,12 @@ static CGPoint MenuPosition ()
 		return YES;
 	}
 
-	for(NSMenuItem* menuItem in [[self itemArray] reverseObjectEnumerator])
-	{
-		if(menuItem == bundlesMenuItem)
-		{
-			for(NSMenuItem* subMenuItem in [[menuItem submenu] itemArray])
-			{
-				static struct { NSUInteger mask; std::string symbol; } const EventFlags[] =
-				{
-					{ NSNumericPadKeyMask, "#" },
-					{ NSControlKeyMask,    "^" },
-					{ NSAlternateKeyMask,  "~" },
-					{ NSShiftKeyMask,      "$" },
-					{ NSCommandKeyMask,    "@" }
-				};
-
-				NSUInteger flags = [subMenuItem keyEquivalentModifierMask];
-
-				std::string res = "";
-				iterate(flag, EventFlags)
-					res += (flags & flag->mask) ? flag->symbol : "";
-				res += to_s([subMenuItem keyEquivalent]);
-
-				if(keyString == res)
-				{
-					[NSApp sendAction:[subMenuItem action] to:[subMenuItem target] from:subMenuItem];
-					return YES;
-				}
-			}
-		}
-		else if([[menuItem submenu] performKeyEquivalent:anEvent])
-		{
-			return YES;
-		}
-	}
-
+	if([super performKeyEquivalent:anEvent])
+		return YES;
+	else if(keyString == "~@\uF702") // ⌥⌘⇠
+		return [self performWindowMenuAction:@selector(selectPreviousTab:)];
+	else if(keyString == "~@\uF703") // ⌥⌘⇢
+		return [self performWindowMenuAction:@selector(selectNextTab:)];
 	return NO;
 }
 @end

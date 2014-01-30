@@ -22,24 +22,32 @@ OAK_DEBUG_VAR(AppController_Commands);
 	if(bundles::item_ptr item = bundles::lookup(to_s(uuidString)))
 	{
 		DocumentController* delegate = (DocumentController*)[[NSApp mainWindow] delegate];
-		if([delegate respondsToSelector:@selector(performBundleItem:)])
+		if(![delegate respondsToSelector:@selector(performBundleItem:)])
+			delegate = [NSApp targetForAction:@selector(performBundleItem:)];
+		if(delegate)
 			return [delegate performBundleItem:item];
 
 		switch(item->kind())
 		{
 			case bundles::kItemTypeSnippet:
 			{
+				document::document_ptr doc = document::create();
 				// TODO set language according to snippet’s scope selector
+				doc->open();
+				document::show(doc); // If we call show() with a document that isn’t open then it will be loaded in the background, and show() will return before this has completed, meaning the next line may not target our new document.
+				[[DocumentController controllerForDocument:doc] performBundleItem:item];
+				doc->close();
 				// TODO mark document as “not modified”
-				DocumentController* controller = [[DocumentController alloc] init];
-				[[controller window] makeKeyAndOrderFront:self];
-				[controller performBundleItem:item];
 			}
 			break;
 
 			case bundles::kItemTypeCommand:
 			{
-				document::run(parse_command(item), ng::buffer_t(), ng::ranges_t(), document::document_ptr());
+				std::map<std::string, std::string> map = oak::basic_environment();
+				map << item->bundle_variables();
+				map = bundles::scope_variables(map);
+				map = variables_for_path(map);
+				document::run(parse_command(item), ng::buffer_t(), ng::ranges_t(), document::document_ptr(), map);
 			}
 			break;
 

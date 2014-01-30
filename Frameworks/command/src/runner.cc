@@ -8,7 +8,7 @@ OAK_DEBUG_VAR(Command_Runner);
 static std::string trim_right (std::string const& str, std::string const& trimChars = " \t\n")
 {
 	std::string::size_type len = str.find_last_not_of(trimChars);
-	return len == std::string::npos ? str : str.substr(0, len+1);
+	return len == std::string::npos ? "" : str.substr(0, len+1);
 }
 
 namespace command
@@ -21,7 +21,7 @@ namespace command
 
 	void runner_t::my_process_t::did_exit (int rc)
 	{
-		oak::process_t::did_exit(rc);
+		process_t::did_exit(rc);
 		_callback->did_exit(rc);
 	}
 
@@ -34,14 +34,14 @@ namespace command
 	// = Command Runner =
 	// ==================
 
-	runner_t::runner_t (bundle_command_t const& command, ng::buffer_t const& buffer, ng::ranges_t const& selection, std::map<std::string, std::string> const& environment, delegate_ptr delegate) : _command(command), _environment(environment), _delegate(delegate), _input_range(text::range_t::undefined), _input_was_selection(false), _output_is_html(false), _did_detach(false), _retain_count(3), _process(this), _return_code(-2)
+	runner_t::runner_t (bundle_command_t const& command, ng::buffer_t const& buffer, ng::ranges_t const& selection, std::map<std::string, std::string> const& environment, std::string const& pwd, delegate_ptr delegate) : _command(command), _environment(environment), _directory(pwd), _delegate(delegate), _input_was_selection(false), _output_is_html(false), _did_detach(false), _retain_count(3), _process(this), _return_code(-2)
 	{
 		fix_shebang(&_command.command);
 	}
 
-	runner_ptr runner (bundle_command_t const& command, ng::buffer_t const& buffer, ng::ranges_t const& selection, std::map<std::string, std::string> const& environment, delegate_ptr delegate)
+	runner_ptr runner (bundle_command_t const& command, ng::buffer_t const& buffer, ng::ranges_t const& selection, std::map<std::string, std::string> const& environment, delegate_ptr delegate, std::string const& pwd)
 	{
-		return runner_ptr(new runner_t(command, buffer, selection, environment, delegate));
+		return std::make_shared<runner_t>(command, buffer, selection, environment, pwd, delegate);
 	}
 
 	void runner_t::release ()
@@ -61,19 +61,20 @@ namespace command
 
 		int inputPipe[2];
 		pipe(inputPipe);
-		_input_range = _command.input == input::nothing ? text::range_t::undefined : _delegate->write_unit_to_fd(inputPipe[1], _command.input, _command.input_fallback, _command.input_format, _command.scope_selector, _environment, &_input_was_selection);
-		close(inputPipe[1]);
+		fcntl(inputPipe[1], F_SETFD, FD_CLOEXEC);
+		_input_range = _command.input == input::nothing ? (close(inputPipe[1]), ng::range_t()) : _delegate->write_unit_to_fd(inputPipe[1], _command.input, _command.input_fallback, _command.input_format, _command.scope_selector, _environment, &_input_was_selection);
 
 		// ----------8<----------
 
 		_process.command     = _command.command;
 		_process.input_fd    = inputPipe[0];
 		_process.environment = _environment;
+		_process.directory   = _directory;
 
 		_process.launch();
 
-		_output_reader = my_reader_ptr(new my_reader_t(_process.output_fd, shared_from_this(), false));
-		_error_reader  = my_reader_ptr(new my_reader_t(_process.error_fd, shared_from_this(), true));
+		_output_reader = std::make_shared<my_reader_t>(_process.output_fd, shared_from_this(), false);
+		_error_reader  = std::make_shared<my_reader_t>(_process.error_fd, shared_from_this(), true);
 
 		if(_command.output == output::new_window && _command.output_format == output_format::html)
 		{
@@ -85,6 +86,7 @@ namespace command
 
 	void runner_t::send_html_data (char const* bytes, size_t len)
 	{
+		_did_send_html = true;
 		_delegate->accept_html_data(shared_from_this(), bytes, len);
 		_callbacks(&callback_t::output, shared_from_this(), bytes, len);
 	}
@@ -187,7 +189,7 @@ namespace command
 					outputCaret = output_caret::after_output;
 			}
 
-			if(_input_range.is_undefined())
+			if(!_input_range)
 			{
 				switch(placement)
 				{
@@ -196,7 +198,14 @@ namespace command
 				}
 			}
 
+			if(format == output_format::snippet && _command.disable_output_auto_indent)
+				format = output_format::snippet_no_auto_indent;
+
 			_delegate->accept_result(_out, placement, format, outputCaret, _input_range, _environment);
+		}
+		else if(_did_send_html)
+		{
+			_delegate->discard_html();
 		}
 
 		_delegate->done();

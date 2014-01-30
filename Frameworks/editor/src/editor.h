@@ -6,7 +6,6 @@
 #include <oak/callbacks.h>
 #include <regexp/find.h>
 #include <command/parser.h>
-#include <command/runner.h>
 #include <document/document.h>
 #include <layout/layout.h>
 
@@ -152,20 +151,29 @@ namespace ng
 
 	PUBLIC action_t to_action (std::string const& sel);
 
+	struct editor_delegate_t
+	{
+		virtual ~editor_delegate_t () { }
+		virtual std::map<std::string, std::string> variables_for_bundle_item (bundles::item_ptr item) = 0;
+	};
+
 	struct PUBLIC editor_t
 	{
 		editor_t ();
 		editor_t (buffer_t& buffer);
 		editor_t (document::document_ptr document);
 
+		editor_delegate_t* delegate () const            { return _delegate; }
+		void set_delegate (editor_delegate_t* delegate) { _delegate = delegate; }
+
 		void perform (action_t action, layout_t const* layout = NULL, bool indentCorrections = false, std::string const& scopeAttributes = NULL_STR);
 
 		bool disallow_tab_expansion () const;
 
 		void insert (std::string const& str, bool selectInsertion = false);
-		void insert_with_pairing (std::string const& str, bool indentCorrections = false, std::string const& scopeAttributes = NULL_STR);
+		void insert_with_pairing (std::string const& str, bool indentCorrections, bool autoPairing, std::string const& scopeAttributes = NULL_STR);
 		void move_selection_to (ng::index_t const& index, bool selectInsertion = true);
-		ranges_t replace (std::string const& searchFor, std::string const& replaceWith, find::options_t options = find::none, bool searchOnlySelection = false);
+		ranges_t replace_all (std::string const& searchFor, std::string const& replaceWith, find::options_t options = find::none, bool searchOnlySelection = false);
 		void delete_tab_trigger (std::string const& str);
 
 		void macro_dispatch (plist::dictionary_t const& args, std::map<std::string, std::string> const& variables);
@@ -174,7 +182,7 @@ namespace ng
 		void execute_dispatch (plist::dictionary_t const& args, std::map<std::string, std::string> const& variables);
 
 		scope::context_t scope (std::string const& scopeAttributes) const;
-		std::map<std::string, std::string> variables (std::map<std::string, std::string> map, std::string const& scopeAttributes) const;
+		std::map<std::string, std::string> editor_variables (std::string const& scopeAttributes) const;
 
 		std::vector<std::string> const& choices () const;
 		std::string placeholder_content (ng::range_t* placeholderSelection = NULL) const;
@@ -185,8 +193,10 @@ namespace ng
 		bool has_selection () const                                           { return not_empty(_buffer, _selections); }
 		std::string as_string (size_t from = 0, size_t to = SIZE_T_MAX) const { return _buffer.substr(from, to != SIZE_T_MAX ? to : _buffer.size()); }
 
-		void perform_replacements (std::multimap<text::range_t, std::string> const& replacements);
-		bool handle_result (std::string const& out, output::type placement, output_format::type format, output_caret::type outputCaret, text::range_t input_range, std::map<std::string, std::string> environment);
+		void perform_replacements (std::multimap<std::pair<size_t, size_t>, std::string> const& replacements);
+		bool handle_result (std::string const& out, output::type placement, output_format::type format, output_caret::type outputCaret, ng::range_t input_range, std::map<std::string, std::string> environment);
+
+		void clear_snippets ();
 
 		// ==============
 		// = Clipboards =
@@ -257,8 +267,8 @@ namespace ng
 		// = Snippets =
 		// ============
 
-		void snippet (std::string const& str, std::map<std::string, std::string> const& variables);
-		ranges_t snippet (size_t from, size_t to, std::string const& str, std::map<std::string, std::string> const& variables);
+		void snippet (std::string const& str, std::map<std::string, std::string> const& variables, bool disableIndent = false);
+		ranges_t snippet (size_t from, size_t to, std::string const& str, std::map<std::string, std::string> const& variables, bool disableIndent);
 
 		void find (std::string const& searchFor, find::options_t options = find::none, bool searchOnlySelection = false);
 		ranges_t replace (std::multimap<range_t, std::string> const& replacements, bool selectInsertions = false);
@@ -280,6 +290,7 @@ namespace ng
 		clipboard_ptr _yank_clipboard;
 		bool _extend_yank_clipboard = false;
 
+		editor_delegate_t* _delegate = NULL;
 		document::document_ptr _document;
 	};
 

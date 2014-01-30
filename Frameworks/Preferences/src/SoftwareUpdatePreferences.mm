@@ -1,5 +1,6 @@
 #import "SoftwareUpdatePreferences.h"
 #import "Keys.h"
+#import <BundlesManager/BundlesManager.h>
 #import <CrashReporter/CrashReporter.h>
 #import <OakAppKit/NSImage Additions.h>
 #import <OakFoundation/NSDate Additions.h>
@@ -30,15 +31,15 @@
 		[self bind:@"lastPoll"    toObject:[SoftwareUpdate sharedInstance] withKeyPath:@"lastPoll"    options:nil];
 		[self bind:@"errorString" toObject:[SoftwareUpdate sharedInstance] withKeyPath:@"errorString" options:nil];
 
-		self.defaultsProperties = [NSDictionary dictionaryWithObjectsAndKeys:
-			kUserDefaultsDisableSoftwareUpdatesKey,  @"disableSoftwareUpdates",
-			kUserDefaultsDisableBundleUpdatesKey,    @"disableBundleUpdates",
-			kUserDefaultsDisableCrashReportingKey,   @"disableCrashReports",
-			kUserDefaultsSoftwareUpdateChannelKey,   @"softwareUpdateChannel",
-			kUserDefaultsAskBeforeUpdatingKey,       @"askBeforeDownloading",
-			kUserDefaultsSubmitUsageInfoKey,         @"submitUsageInfo",
-			kUserDefaultsCrashReportsContactInfoKey, @"contactInfo",
-		nil];
+		self.defaultsProperties = @{
+			@"disableSoftwareUpdates" : kUserDefaultsDisableSoftwareUpdatesKey,
+			@"disableBundleUpdates"   : kUserDefaultsDisableBundleUpdatesKey,
+			@"disableCrashReports"    : kUserDefaultsDisableCrashReportingKey,
+			@"softwareUpdateChannel"  : kUserDefaultsSoftwareUpdateChannelKey,
+			@"askBeforeDownloading"   : kUserDefaultsAskBeforeUpdatingKey,
+			@"submitUsageInfo"        : kUserDefaultsSubmitUsageInfoKey,
+			@"contactInfo"            : kUserDefaultsCrashReportsContactInfoKey,
+		};
 	}
 	return self;
 }

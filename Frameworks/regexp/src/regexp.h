@@ -1,8 +1,10 @@
 #ifndef ONIG_REGEXP_H_UMTUKY6I
 #define ONIG_REGEXP_H_UMTUKY6I
 
-#include "oniguruma.h"
+#include <Onigmo/oniguruma.h>
 #include <oak/debug.h>
+
+#define ONIG_OPTION_NOTGPOS (ONIG_OPTION_MAXBIT << 1)
 
 namespace regexp
 {
@@ -45,6 +47,7 @@ namespace regexp
 
 		std::map<std::string, std::string> const& captures () const;
 		std::multimap<std::string, std::pair<size_t, size_t> > const& capture_indices () const;
+		std::string operator[] (size_t i) const;
 	};
 
 	struct PUBLIC pattern_t
@@ -66,7 +69,6 @@ namespace regexp
 
 		bool operator== (pattern_t const& rhs) const { return pattern_string == rhs.pattern_string; }
 		bool operator!= (pattern_t const& rhs) const { return !(*this == rhs); }
-		size_t indices_for_group (char const* name, int** list) const;
 
 		friend std::string to_s (pattern_t const& ptrn);
 	};
@@ -75,6 +77,7 @@ namespace regexp
 
 	PUBLIC std::string validate (std::string const& ptrn);
 	PUBLIC match_t search (pattern_t const& ptrn, char const* first, char const* last, char const* from = NULL, char const* to = NULL, OnigOptionType options = ONIG_OPTION_NONE);
+	PUBLIC match_t search (pattern_t const& ptrn, std::string const& str);
 
 } /* regexp */
 

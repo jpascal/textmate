@@ -1,9 +1,6 @@
-@interface OakAbbreviations : NSObject
-{
-@private
-	NSString* name;
-	NSMutableArray* bindings;
-}
+#import <oak/misc.h>
+
+PUBLIC @interface OakAbbreviations : NSObject
 + (OakAbbreviations*)abbreviationsForName:(NSString*)aName;
 
 - (NSArray*)stringsForAbbreviation:(NSString*)anAbbreviation;
